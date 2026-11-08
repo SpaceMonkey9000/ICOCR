@@ -1,0 +1,15 @@
+# ICOCR runtime dependencies.
+# Requires Python 3.10-3.12 (3.11 recommended on Windows). Python 3.13 is not
+# supported: rapidocr-onnxruntime 1.4.4 and numpy 1.26.4 have no 3.13 wheels.
+# Development/test tools: pip install -r requirements-dev.txt
+numpy==1.26.4
+opencv-python==4.11.0.86
+Pillow>=10.4,<13
+rapidocr-onnxruntime==1.4.4
+cv2-enumerate-cameras==1.1.15
+onnxruntime==1.22.0
+# Imported directly (shared_data.ocr_model_paths reads the RapidOCR config.yaml).
+PyYAML==6.0.3
+
+# SVG display; prebuilt Windows wheels, no system renderer required.
+resvg_py==0.5.0
