@@ -23,11 +23,11 @@ Connect a microscope camera or open a saved photo, select the chip, and scan. Li
 
 Reading a microcontroller marking and displaying a database reference:
 
-![ICOCR reading an MC908-series microcontroller marking](images/ICOCR_02.png)
+![ICOCR reading an MC908-series microcontroller marking](images/ICOCR_01.png)
 
 Reading an LM2901M marking and showing an LM2901 reference:
 
-![ICOCR reading LM2901M and displaying an LM2901 pinout reference](images/ICOCR_01.png)
+![ICOCR reading LM2901M and displaying an LM2901 pinout reference](images/ICOCR_02.png)
 
 ## Getting started
 
