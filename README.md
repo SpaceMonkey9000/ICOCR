@@ -6,7 +6,7 @@ ICOCR is a Windows app for electronics repair and board inspection. It reads the
 
 It puts the marking and reference information in one place, so there’s less typing and less switching between windows while working on a board.
 
-![ICOCR reading a 74HC14 from a live microscope image, with a pinout displayed alongside it](images/ICOCR_03.png)
+![ICOCR reading a 74HC14 from a live microscope image, with a pinout displayed alongside it](images/ICOCR_02.png)
 
 ## At the bench
 
@@ -27,7 +27,7 @@ Reading a microcontroller marking and displaying a database reference:
 
 Reading an LM2901M marking and showing an LM2901 reference:
 
-![ICOCR reading LM2901M and displaying an LM2901 pinout reference](images/ICOCR_02.png)
+![ICOCR reading LM2901M and displaying an LM2901 pinout reference](images/ICOCR_04.png)
 
 ## Getting started
 
