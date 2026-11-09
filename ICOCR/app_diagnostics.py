@@ -41,6 +41,8 @@ def candidate_report(row):
              f"rank {row.get('selection_rank', row.get('rank', 0)):.3f}"]
     if row.get('applied_rules'):
         lines.append('  Applied rules: ' + json.dumps(row['applied_rules'], ensure_ascii=False))
+    if row.get('join_evidence'):
+        lines.append('  Wrapped-line observations: ' + json.dumps(row['join_evidence'], ensure_ascii=False))
     if row.get('whitespace_joined'):
         lines.append(f"  Printed line: {row.get('raw_text', row['text'])}")
     correction = row.get('ocr_correction')

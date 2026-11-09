@@ -310,13 +310,19 @@ def joined_markings(rows, catalog):
     if catalog is None or not rule_enabled('join.wrapped'):
         return []
     import numpy as np
+    from selection_evidence import views, compatible_views
     joined = []
     seen = {r['key'] for r in rows}
-    # Work is bounded; retain source tokens for diagnostics and manual review.
-    for first in rows[:64]:
+    # The highest-scoring representative of each token can come from a
+    # different rotation/pass. Join coherent retained observations instead.
+    # Bound both tokens and views, and keep original row-level conflict data.
+    observations = [dict(row, **view) for row in rows[:64]
+                    for view in views(row)[:8]]
+    for first in observations:
         patterns = [(second, exact) for start, second, exact in WRAPPED_PATTERNS
                     if len(first['key']) <= 32 and start.fullmatch(first['key'])]
-        if (not patterns or first.get('conflicts') or not first.get('box')):
+        if (not patterns or first.get('conflicts') or not first.get('box') or
+                first.get('orientation_alternative')):
             continue
         a = np.asarray(first['box'], dtype=float)
         direction = a[1] - a[0]
@@ -326,15 +332,19 @@ def joined_markings(rows, catalog):
         u = direction / width
         v = np.array([-u[1], u[0]])
         height = float(np.ptp(a @ v))
-        for second in rows[:64]:
-            if (second is first or second.get('rotation') != first.get('rotation') or
+        for second in observations:
+            if (second['key'] == first['key'] or not compatible_views(first, second) or
                     second.get('conflicts') or not second.get('box') or
-                    len(second['key']) > 32):
+                    second.get('orientation_alternative') or len(second['key']) > 32):
                 continue
             applicable = [exact for end, exact in patterns if end.fullmatch(second['key'])]
             if not applicable:
                 continue
             b = np.asarray(second['box'], dtype=float)
+            edge = b[1] - b[0]
+            length = float(np.linalg.norm(edge))
+            if length < 1 or float(np.dot(u, edge / length)) < tuning('marking_context.neighbour_alignment_cosine'):
+                continue
             bh = float(np.ptp(b @ v))
             bw = float(np.ptp(b @ u))
             delta = b.mean(axis=0) - a.mean(axis=0)
@@ -369,7 +379,9 @@ def joined_markings(rows, catalog):
                 joined_from=[first['key'],second['key']],
                 observed_markings=[first.get('raw_text', first.get('text', first['key'])),
                                    second.get('raw_text', second.get('text', second['key']))],
-                wrapped_join=True))
+                wrapped_join=True, rotation=first.get('rotation', 0),
+                join_evidence=[{k: view.get(k) for k in ('key', 'rotation', 'pass_id', 'box', 'score')}
+                               for view in (first, second)]))
             seen.add(key)
     return joined
 

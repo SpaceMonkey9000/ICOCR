@@ -1,5 +1,6 @@
 """Offline wrapped-line rule and resolver regressions; no camera or OCR models."""
 import copy
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -40,7 +41,8 @@ class WrappedRules(unittest.TestCase):
         limits = {'component_catalog.wrapped_height_min':.5,
                   'component_catalog.wrapped_vertical_min':.6,
                   'component_catalog.wrapped_horizontal_ratio':.6,
-                  'component_catalog.wrapped_rank_bonus':.15}
+                  'component_catalog.wrapped_rank_bonus':.15,
+                  'marking_context.neighbour_alignment_cosine':.94}
         with patch.object(catalog_module, 'WRAPPED_PATTERNS', patterns), \
              patch.object(catalog_module, 'rule_enabled', return_value=rule['enabled']), \
              patch.object(catalog_module, 'tuning', side_effect=limits.__getitem__):
@@ -65,11 +67,55 @@ class WrappedRules(unittest.TestCase):
             self.assertEqual(self.join([row('TPS',0),row('65150',30)], Catalog(part,match)), [])
 
     def test_geometry_orientation_and_conflicts_still_gate_joins(self):
+        reverse = row('65150',30,rotation=180)
+        reverse['box'] = reverse['box'][2:] + reverse['box'][:2]
         variants = [row('65150',300), row('65150',30,x=300),
-                    row('65150',30,rotation=180), dict(row('65150',30),conflicts=['6515O'])]
+                    reverse, dict(row('65150',30),conflicts=['6515O'])]
         for second in variants:
             with self.subTest(second=second):
                 self.assertEqual(self.join([row('TPS',0),second],Catalog('TPS65150')), [])
+
+    def test_retained_same_pass_views_join_despite_representative_rotations(self):
+        first = dict(row('TPS',0),pass_id=5)
+        second = dict(row('65150',30,rotation=180),pass_id=7)
+        second['box'] = second['box'][2:] + second['box'][:2]
+        first['observation_evidence'] = [dict(first)]
+        second['observation_evidence'] = [dict(row('65150',30),pass_id=5),dict(second)]
+        result = self.join([first,second],Catalog('TPS65150'))
+        self.assertEqual(result[0]['key'],'TPS65150')
+        self.assertEqual([v['pass_id'] for v in result[0]['join_evidence']],[5,5])
+
+    def test_different_passes_cannot_supply_a_join(self):
+        self.assertEqual(self.join([dict(row('TPS',0),pass_id=5),
+                                    dict(row('65150',30),pass_id=7)],Catalog('TPS65150')),[])
+
+    def test_rotation_labels_do_not_override_physical_alignment(self):
+        result = self.join([row('TPS',0),row('65150',30,rotation=90)],Catalog('TPS65150'))
+        self.assertEqual(result[0]['key'],'TPS65150')
+
+    @unittest.skipUnless(importlib.util.find_spec('cv2'), 'OpenCV needed for complete selection pipeline')
+    def test_actual_image_geometry_through_complete_selection(self):
+        from ocr_core import split_candidates
+        from scan_result import build_scan_result
+        # Retained observations from the supplied image, cropped to its chip.
+        first = dict(row('TPS',0),pass_id=5,score=.9866868655,mode='Original',
+                     box=[[101.3093,151.1732],[169.8168,102.5654],[190.0700,131.1101],[121.5625,179.7180]])
+        second = dict(row('65150',0,rotation=180),pass_id=7,score=.9993972898,mode='Original',
+                      box=[[249.3520,132.5761],[153.1153,200.8586],[134.5980,174.7605],[230.8347,106.4780]])
+        shared = dict(row('65150',0),pass_id=5,score=.9993225813,mode='Original',
+                      box=[[135.4136,174.1818],[232.0056,103.8080],[251.7987,130.8401],[155.2066,201.2139]])
+        catalog = catalog_module.Catalog.__new__(catalog_module.Catalog)
+        catalog.records = {'TPS65150': [dict(part='TPS65150',manufacturer='TI',family='',
+            source='test',line='',package='QFN',qualifiers='',component_function='',entry_function='')]}
+        rows, _, every = split_candidates([first,second,shared],modes=1)
+        self.assertNotEqual(next(r['rotation'] for r in every if r['key']=='TPS'),
+                            next(r['rotation'] for r in every if r['key']=='65150'))
+        result = build_scan_result(rows,every,catalog)
+        self.assertEqual(result['selected_marking'],'TPS65150')
+        self.assertEqual(result['resolved_partnumber'],'TPS65150')
+        self.assertEqual(next(r['selection_decision'] for r in result['all_candidates']
+                              if r['key']=='TPS'),'rejected')
+        self.assertEqual([v['pass_id'] for v in result['selected']['join_evidence']],[5,5])
 
     def test_disabled_rule_and_numeric_date_after_complete_part(self):
         disabled = dict(wrapped_defaults(), enabled=False)

@@ -1,5 +1,6 @@
 # Unreleased
 
+- Fix wrapped joins when the best token readings come from different OCR rotations: use retained compatible observations from the same pass and compare physical text directions. Preserve the contributing observation boxes, rotations and pass IDs in diagnostics.
 - Move wrapped-line text patterns into `join.wrapped.json` with validated line-pattern pairs and per-pair exact-match requirements.
 - Add exact-database joins for letter-only prefixes followed by numeric lines, including `TPS` / `65150`; preserve existing wrapped suffix joins and geometry safeguards.
 - Keep existing switch-only modules compatible, preserve enable/disable state, and identify wrapped joins as `join.wrapped` in applied-rule diagnostics.

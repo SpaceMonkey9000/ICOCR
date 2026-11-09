@@ -114,6 +114,12 @@ it does not authorize arbitrary partial matches or inferred missing characters.
 Geometry, orientation and conflict checks still apply. Original readings are
 retained; no additional OCR passes are introduced.
 
+Joining examines retained observations rather than only each token's
+highest-scoring representative. Observations with pass IDs must share a pass;
+physical box directions must align. Different rotation labels on independently
+chosen representatives no longer prevent a join supported by a coherent pair.
+Diagnostics list the contributing boxes, scores, pass IDs and rotation labels.
+
 There must be 1–32 pairs. Patterns accept uppercase letters/digits, character
 classes such as `[A-Z]`, and finite repeats such as `{3}` or `{1,6}` (at most 32).
 Groups, alternation, wildcards, escapes and unbounded repeats are rejected.
