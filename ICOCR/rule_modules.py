@@ -11,6 +11,8 @@ from collections import Counter
 SCHEMA_VERSION = 1
 FAMILY_FILE = 'rules/device_families.json'
 FAMILY_LISTS = ('strict_patterns', 'spaced_patterns', 'broad_patterns', 'hint_patterns', 'contextual_costs')
+_WRAPPED_ATOM = r'(?:[A-Z0-9]|\[[A-Z0-9-]+\])(?:\{[0-9]{1,2}(?:,[0-9]{1,2})?\})?'
+_WRAPPED_SYNTAX = re.compile(r'(?:' + _WRAPPED_ATOM + r')+')
 GROUPS = {
     'rules/part_prefixes.json': ('syntax.prefixes', 'Part-number prefixes', 'Syntax'),
     'rules/negative_words.json': ('exclude.metadata', 'Country, origin and metadata words', 'Exclusions'),
@@ -50,6 +52,12 @@ def module(rule_id, name, category, kind, **fields):
                 enabled=True, kind=kind, priority=100, **fields)
 
 
+def wrapped_defaults():
+    """Single data-owned definition, also used for legacy switch upgrades."""
+    path = Path(__file__).resolve().parent/'factory'/'rules'/'join.wrapped.json'
+    return json.loads(path.read_text('utf-8'))
+
+
 def default_modules(config):
     result = []
     for target, (rule_id, name, category) in GROUPS.items():
@@ -76,7 +84,9 @@ def default_modules(config):
             row['priority'] = 100 + index
             result.append(row)
     for rule_id, (name, category) in SWITCHES.items():
-        if rule_id == 'orientation.pattern':
+        if rule_id == 'join.wrapped':
+            result.append(wrapped_defaults())
+        elif rule_id == 'orientation.pattern':
             result.append(module(rule_id, name, category, 'orientation',
                 min_score=config[FAMILY_FILE]['orientation_min_score'],
                 max_score_gap=config[FAMILY_FILE]['orientation_max_score_gap']))
@@ -132,14 +142,48 @@ def validate_module(row, validate_config, base):
     if type(row['enabled']) is not bool:
         raise ValueError('enabled must be boolean')
     kind = row['kind']
+    # Existing installs have a payload-free switch. Normalize it in memory;
+    # never overwrite an installed module or restore a disabled operation.
+    if row['id'] == 'join.wrapped' and kind == 'switch':
+        if set(row) - {'priority'} != required:
+            raise ValueError('unexpected fields in legacy wrapped-line switch')
+        row = dict(row, kind='wrapped_join', patterns=wrapped_defaults()['patterns'])
+        kind = row['kind']
     extras = {'database_rule': {'recipe', 'values'}, 'config': {'target', 'config'}, 'family': {'collection', 'rule'},
-              'switch': set(), 'orientation': {'min_score', 'max_score_gap'}, 'prefix_candidates': {'pattern', 'prefixes', 'suffixes', 'ignore_trailing_hyphen'}}
+              'switch': set(), 'wrapped_join': {'patterns'}, 'orientation': {'min_score', 'max_score_gap'}, 'prefix_candidates': {'pattern', 'prefixes', 'suffixes', 'ignore_trailing_hyphen'}}
     if kind not in extras or set(row) - {'priority'} != required | extras[kind]:
         raise ValueError('unsupported kind or unexpected fields')
     if 'priority' in row and (type(row['priority']) is not int or not -10000 <= row['priority'] <= 10000):
         raise ValueError('priority must be an integer between -10000 and 10000')
     row = copy.deepcopy(row)
-    if kind == 'database_rule':
+    if kind == 'wrapped_join':
+        if row['id'] != 'join.wrapped':
+            raise ValueError('wrapped_join module must use join.wrapped ID')
+        patterns = row['patterns']
+        if not isinstance(patterns, list) or not 1 <= len(patterns) <= 32:
+            raise ValueError('patterns must contain 1–32 line-pattern pairs')
+        for pair in patterns:
+            if not isinstance(pair, dict) or set(pair) != {'first', 'second', 'exact_only'}:
+                raise ValueError('each pattern needs first, second and exact_only')
+            if type(pair['exact_only']) is not bool:
+                raise ValueError('exact_only must be boolean')
+            for key in ('first', 'second'):
+                # Deliberately bounded grammar: uppercase literals/classes with
+                # optional finite repeats. No groups or unbounded repeats.
+                value = pair[key]
+                if (not isinstance(value, str) or not 1 <= len(value) <= 256 or
+                        not _WRAPPED_SYNTAX.fullmatch(value)):
+                    raise ValueError(key+' must use uppercase literals/classes and finite repeats')
+                for low, high in re.findall(r'\{([0-9]+)(?:,([0-9]+))?\}', value):
+                    if not 0 <= int(low) <= int(high or low) <= 32:
+                        raise ValueError(key+' repeats must be ordered and at most 32')
+                try:
+                    compiled = re.compile(value)
+                except re.error as exc:
+                    raise ValueError(key+' has an invalid pattern: '+str(exc)) from exc
+                if compiled.fullmatch(''):
+                    raise ValueError(key+' must not match empty text')
+    elif kind == 'database_rule':
         allowed = {'prefix_hints': None, 'logic': {'LS','ALS','F','AC','ACT','AHC','AHCT','LVC'},
                    'transistor': set('ABCDJK'), 'mosfet': set(), 'separators': set()}
         recipe, values = row['recipe'], row['values']
@@ -248,7 +292,7 @@ class RuleSnapshot:
                     self._disable(row['target'])
             elif kind == 'family':
                 self.config[FAMILY_FILE][row['collection']].append(dict(row['rule'], enabled=enabled))
-            elif kind in ('switch', 'orientation'):
+            elif kind in ('switch', 'orientation', 'wrapped_join'):
                 self.switches[row['id']] = enabled
                 if kind == 'orientation':
                     self.config[FAMILY_FILE]['orientation_min_score'] = row['min_score']
@@ -290,7 +334,7 @@ def save_enabled(rows, values, validate_config, base):
         expected = {k:v for k,v in original.items() if k != 'path'}
         if validate_module(current, validate_config, base) != expected:
             raise ValueError(path.name+' changed on disk. Refresh the rules list before saving.')
-        updated = dict(current, enabled=wanted)
+        updated = dict(validate_module(current, validate_config, base), enabled=wanted)
         validate_module(updated, validate_config, base)
         updates.append((path, current, updated))
     done = []

@@ -1,3 +1,9 @@
+# Unreleased
+
+- Move wrapped-line text patterns into `join.wrapped.json` with validated line-pattern pairs and per-pair exact-match requirements.
+- Add exact-database joins for letter-only prefixes followed by numeric lines, including `TPS` / `65150`; preserve existing wrapped suffix joins and geometry safeguards.
+- Keep existing switch-only modules compatible, preserve enable/disable state, and identify wrapped joins as `join.wrapped` in applied-rule diagnostics.
+
 # 0.8.9.9-RC2
 
 - Restore VERSION export required by app.py; keep APP_VERSION as a compatibility alias.

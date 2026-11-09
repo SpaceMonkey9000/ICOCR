@@ -94,6 +94,38 @@ Collections: `strict_patterns`, `spaced_patterns`, `broad_patterns`, `hint_patte
 
 ## Existing configuration and built-in operation modules
 
+### Wrapped part-number lines
+
+`join.wrapped.json` uses kind `wrapped_join`. Edit `patterns` in the active
+`DATA/rules` folder, then restart ICOCR. Each pair contains `first` and `second`
+full-line patterns in reading order, and boolean `exact_only`:
+
+```json
+"patterns": [
+  {"first": "[A-Z]{2,8}[0-9]{1,6}", "second": "[0-9]{1,4}[A-Z]{1,4}", "exact_only": false},
+  {"first": "[A-Z]{2,8}", "second": "[0-9]{3,6}", "exact_only": true}
+]
+```
+
+The first pair preserves wraps such as `ADM34` / `83ARZ`. The second supports
+`TPS` / `65150` only when the concatenated name has an exact database match.
+`exact_only: false` retains the existing exact-or-unique-printed-base checks;
+it does not authorize arbitrary partial matches or inferred missing characters.
+Geometry, orientation and conflict checks still apply. Original readings are
+retained; no additional OCR passes are introduced.
+
+There must be 1–32 pairs. Patterns accept uppercase letters/digits, character
+classes such as `[A-Z]`, and finite repeats such as `{3}` or `{1,6}` (at most 32).
+Groups, alternation, wildcards, escapes and unbounded repeats are rejected.
+Each input token is limited to 32 characters. The checkbox controls the entire
+module; the JSON controls the accepted line shapes.
+
+Existing switch-only `join.wrapped` files load the bundled pattern defaults
+without being overwritten, preserving their enabled state. Replace an old
+switch-only file with the new factory module to edit its patterns explicitly.
+Saving a changed checkbox also writes the expanded module. Invalid new modules
+are skipped and reported, rather than falling back to defaults.
+
 `config` modules have a supported `target` and a `config` payload using the existing validated file format. The supported targets are part prefixes, negative words, brands, OCR confusions, marking aliases and ranking/line_weights. One module owns each target. The top-level module checkbox is authoritative for enable/disable. Edit the payload for detailed tuning; preserve its required fields.
 
 `switch` modules enable named built-in matching/context/exclusion operations. Their IDs identify the implemented operation and cannot be invented to add new behavior. `orientation` owns the reading-direction operation, `min_score` and `max_score_gap` (both 0–1). Keep its ID `orientation.pattern`.

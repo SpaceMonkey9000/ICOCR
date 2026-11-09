@@ -1,5 +1,5 @@
 """Read-only snapshot of the separate Component Database Builder catalogue."""
-from config_loader import tuning, rule_enabled
+from config_loader import tuning, rule_enabled, RULES
 from pathlib import Path
 import logging
 import re
@@ -13,6 +13,9 @@ from marking_rules import (origin_exclusion, part_pattern, ORIENTATION_PATTERN_M
 from marking_context import contextual_marking, context_rank_bonus, selection_order, expand_views
 
 MAX_AFFIX_CHARS = tuning('matching.max_affix_chars')
+WRAPPED_PATTERNS = tuple((re.compile(pair['first']), re.compile(pair['second']), pair['exact_only'])
+                        for rule in RULES.modules if rule['kind'] == 'wrapped_join' and rule['enabled']
+                        for pair in rule['patterns'])
 CORRECTION_MIN_SCORE = tuning('selection.correction_min_score')   # OCR score needed for an automatic correction (0.90 before 0.8.3.5)
 PCB_REFERENCE = re.compile(r'^(?:R|C|L|D|Q|U|IC|TP|LED|JP|J|CN|RN|RA|CA)[ -]*[0-9]{1,5}$')
 
@@ -311,8 +314,9 @@ def joined_markings(rows, catalog):
     seen = {r['key'] for r in rows}
     # Work is bounded; retain source tokens for diagnostics and manual review.
     for first in rows[:64]:
-        if (not re.fullmatch(r'[A-Z]{2,8}[0-9]{1,6}', first['key']) or
-                first.get('conflicts') or not first.get('box')):
+        patterns = [(second, exact) for start, second, exact in WRAPPED_PATTERNS
+                    if len(first['key']) <= 32 and start.fullmatch(first['key'])]
+        if (not patterns or first.get('conflicts') or not first.get('box')):
             continue
         a = np.asarray(first['box'], dtype=float)
         direction = a[1] - a[0]
@@ -325,7 +329,10 @@ def joined_markings(rows, catalog):
         for second in rows[:64]:
             if (second is first or second.get('rotation') != first.get('rotation') or
                     second.get('conflicts') or not second.get('box') or
-                    not re.fullmatch(r'[0-9]{1,4}[A-Z]{1,4}', second['key'])):
+                    len(second['key']) > 32):
+                continue
+            applicable = [exact for end, exact in patterns if end.fullmatch(second['key'])]
+            if not applicable:
                 continue
             b = np.asarray(second['box'], dtype=float)
             bh = float(np.ptp(b @ v))
@@ -340,6 +347,8 @@ def joined_markings(rows, catalog):
                 continue
             matches = catalog.find(key)
             names = {m['part'].upper() for m in matches}
+            if all(applicable) and not any(m.get('match_type') == 'exact' for m in matches):
+                continue
             if not matches or (not any(m.get('match_type') == 'exact' for m in matches)
                                and len(names) != 1):
                 continue
@@ -359,7 +368,8 @@ def joined_markings(rows, catalog):
                 evidence='Adjacent aligned lines: '+first['key']+' + '+second['key'],
                 joined_from=[first['key'],second['key']],
                 observed_markings=[first.get('raw_text', first.get('text', first['key'])),
-                                   second.get('raw_text', second.get('text', second['key']))]))
+                                   second.get('raw_text', second.get('text', second['key']))],
+                wrapped_join=True))
             seen.add(key)
     return joined
 
@@ -585,7 +595,7 @@ def annotate(rows,catalog=None):
         if not row['applied_rules'] and not row.get('ocr_correction'):
             if any(m.get('identity_evidence') == 'literal_base_with_suffix' for m in trusted):
                 row['applied_rules'].append(dict(rule_id='legacy.literal_base_suffix', observed=text))
-        for flag, rule_id in (('logo_stripped_from','legacy.logo_strip'), ('joined_from','legacy.join_printed_fragments')):
+        for flag, rule_id in (('logo_stripped_from','legacy.logo_strip'), ('joined_from', 'join.wrapped' if row.get('wrapped_join') else 'legacy.join_printed_fragments')):
             if row.get(flag):
                 row['applied_rules'].append(dict(rule_id=rule_id, observed=row.get('observed_markings', []), result=text))
         if row.get('whitespace_joined'):
