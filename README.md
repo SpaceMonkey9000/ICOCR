@@ -53,3 +53,11 @@ For setup details, see the [installation notes](ICOCR/README.md), [user guide](I
 ## Reporting a missed reading
 
 An [issue](https://github.com/SpaceMonkey9000/ICOCR/issues) with a clear chip image, the expected marking, and what ICOCR actually read gives me something useful to test against. Include the application version and diagnostic output when available.
+
+## Future plans
+
+- **Package type detection.**
+- **More database entries.**
+- **Full Pinout database.**
+- **Short marking identification.**
+- **Support for SOT23 and smaller packages.**
