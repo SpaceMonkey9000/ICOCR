@@ -16,6 +16,8 @@ import queue
 import threading
 import cv2
 
+from user_paths import default_capture_directory
+
 
 def stamp():
     return datetime.now(timezone.utc).isoformat()
@@ -38,8 +40,9 @@ class Documentation:
     """
     QUEUE_FULL = 'Save queue full; image was not saved'
 
-    def __init__(self, directory):
+    def __init__(self, directory, capture_directory=None):
         self.directory = Path(directory)
+        self.capture_directory = Path(capture_directory) if capture_directory is not None else default_capture_directory()
         self.events = queue.Queue()
         self.jobs = queue.Queue()
         self.slots = threading.BoundedSemaphore(4)
@@ -79,7 +82,8 @@ class Documentation:
             self.slots.release()
 
     def capture(self, frame):
-        return self._submit('capture', self._capture, frame.copy())
+        # Freeze the destination now; a settings change must not redirect queued saves.
+        return self._submit('capture', self._capture, frame.copy(), self.capture_directory)
 
     @staticmethod
     def _jpeg(image, quality):
@@ -90,16 +94,15 @@ class Documentation:
 
     CAPTURE_JPEG_QUALITY = 95
 
-    def _capture(self, frame):
+    def _capture(self, frame, directory=None):
         """Full-resolution capture as JPEG quality 95 (0.8.3.5; was lossless PNG).
         Numbering continues across older PNG captures; no name is reused."""
-        directory = self.directory / 'captures'
+        directory = Path(directory) if directory is not None else self.capture_directory
         directory.mkdir(parents=True, exist_ok=True)
         encoded = self._jpeg(frame, self.CAPTURE_JPEG_QUALITY)
-        if self.sequence == 0:
-            self.sequence = max((int(p.stem[3:]) for p in directory.glob('IC_*')
-                                 if p.suffix.lower() in ('.png', '.jpg', '.jpeg') and p.stem[3:].isdigit()),
-                                default=0)
+        self.sequence = max((int(p.stem[3:]) for p in directory.glob('IC_*')
+                             if p.suffix.lower() in ('.png', '.jpg', '.jpeg') and p.stem[3:].isdigit()),
+                            default=0)
         while True:
             self.sequence += 1
             if any((directory / f'IC_{self.sequence:06d}{ext}').exists() for ext in ('.png', '.jpeg')):

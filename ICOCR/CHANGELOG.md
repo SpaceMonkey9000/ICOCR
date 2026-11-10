@@ -1,4 +1,10 @@
-# Unreleased
+# 0.8.9.9-RC3
+
+- Save Capture image / Space snapshots in Pictures/ICOCR by default, respecting the Windows Pictures folder location.
+- Add Settings → Database & Documentation → Select image capture folder; remember the selection and apply it immediately.
+- Open image folder follows the capture destination. Confirmed reading logs remain in DATA/confirmed. Existing captures are not moved.
+
+Included changes from the supplied RC2 source:
 
 - Fix wrapped joins when the best token readings come from different OCR rotations: use retained compatible observations from the same pass and compare physical text directions. Preserve the contributing observation boxes, rotations and pass IDs in diagnostics.
 - Move wrapped-line text patterns into `join.wrapped.json` with validated line-pattern pairs and per-pair exact-match requirements.

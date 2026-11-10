@@ -8,7 +8,7 @@ applies camera changes. Request MJPG changes the requested camera
 format; hardware support varies. Open image provides the same selection and
 scanning workflow without a live camera.
 
-Drag over one chip. Right-click restores the default selection box. Scan or Enter reads the current selection. Space (or Capture image) saves the full current frame as a JPEG (quality 95) in `DATA/captures`, one image per key press. Live recognition
+Drag over one chip. Right-click restores the default selection box. Scan or Enter reads the current selection. Space (or Capture image) saves the full current frame as a JPEG (quality 95) in your Pictures/ICOCR folder (or the folder selected in Settings → Database & Documentation → Select image capture folder), one image per key press. Live recognition
 waits for a stable scene, scans, then tracks a selected or provisional marking.
 Line rereads vote across frames. Unresolved targets get initial rapid retries,
 then retry every five seconds. Text agreement is not proof of component identity.

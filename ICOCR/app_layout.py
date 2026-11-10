@@ -80,7 +80,7 @@ class LayoutMixin:
                         command=self.toggle_live).pack(side='left', padx=12)
         ttk.Button(bar, text='Capture image [Space]', command=self.capture_image).pack(side='left', padx=5)
         ttk.Button(bar, text='Open image folder',
-                   command=lambda: self.open_folder(DATA/'captures')).pack(side='left', padx=5)
+                   command=lambda: self.open_folder(self.documentation.capture_directory)).pack(side='left', padx=5)
 
     def build_body(self):
         body = ttk.Panedwindow(self.root, orient='horizontal')
@@ -221,7 +221,11 @@ class LayoutMixin:
         ttk.Label(tab, text='Confirmed readings: '+str(confirmed), wraplength=550).pack(anchor='w', pady=8)
         ttk.Button(tab, text='Open confirmed folder',
                    command=lambda: self.open_folder(confirmed)).pack(anchor='w', pady=5)
-        ttk.Label(tab, text='Clean captures (Space): '+str(DATA/'captures'), wraplength=550).pack(anchor='w', pady=8)
+        ttk.Label(tab, text='Image capture folder (Space):').pack(anchor='w', pady=(8, 2))
+        self.capture_folder_label = tk.StringVar(value=str(self.documentation.capture_directory))
+        ttk.Label(tab, textvariable=self.capture_folder_label, wraplength=550).pack(anchor='w')
+        ttk.Button(tab, text='Select image capture folder…',
+                   command=self.choose_capture_folder).pack(anchor='w', pady=5)
 
     def build_tools_settings(self, tab):
         from user_paths import CONFIG_DIR

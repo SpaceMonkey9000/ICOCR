@@ -98,7 +98,8 @@ class App(SleepMixin, LayoutMixin, SettingsMixin, DatabaseMixin, CaptureMixin, S
         self.ui_preferences = read_settings_section('ui') or {}
         self.cache.update(load_json(DATA/'matches.json', dict, 'saved matches') or {})
         self.snapshot_preprocessing = self.load_preprocessing()
-        self.documentation = Documentation(DATA)
+        from user_paths import capture_directory
+        self.documentation = Documentation(DATA, capture_directory(self.ui_preferences))
         self.tracking_worker = TrackingWorker()
         self.overlay_worker = OverlayWorker()
         migrate_click_log()

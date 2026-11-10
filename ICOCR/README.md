@@ -1,4 +1,4 @@
-# ICOCR 0.8.9.9-RC2
+# ICOCR 0.8.9.9-RC3
 
 Local IC-marking OCR for microscope camera frames or saved images, with component
 catalogue matching and pinout display. Release candidate toward 0.9 beta.
@@ -25,12 +25,15 @@ existing catalogue unless you select database replacement; replacement creates a
 - Overrides: `ICLENS_DATA` for DATA; `ICOCR_CONFIG_DIR` for application settings.
 - Database: `DATA\db\components.sqlite`; an existing root `components.sqlite` remains supported.
 - Models: `DATA\models`, OCR weights under `DATA\models\ocr`.
+- Image captures (Space): `Pictures\ICOCR`, using the Windows Pictures folder location.
+  Change it in Settings → Database & Documentation → Select image capture folder.
 - Rules: `DATA\rules`; bundled defaults under application `factory\rules` seed missing files.
 
 Source execution uses the normal user settings unless `ICOCR_CONFIG_DIR` is set.
 For isolated development, set both overrides. Source sibling DATA alone does not
-isolate preferences. Folder selection requires restarting ICDB and ICOCR, and does
-not move existing files.
+isolate preferences. Changing the shared DATA folder requires restarting ICDB and
+ICOCR, and does not move existing files. Image capture folder changes apply
+immediately and are remembered; existing captures stay in their original folder.
 
 ## First scan
 

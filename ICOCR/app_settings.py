@@ -106,6 +106,21 @@ class SettingsMixin:
         from shared_data import choose_directory
         choose_directory(self.root, DATA)
 
+    def choose_capture_folder(self):
+        path = filedialog.askdirectory(title='Select image capture folder',
+                                       initialdir=str(self.documentation.capture_directory),
+                                       parent=self.settings_window)
+        if not path:
+            return
+        directory = Path(path).expanduser().resolve()
+        previous = self.ui_preferences
+        self.ui_preferences = dict(previous, capture_folder=str(directory))
+        if not self.save_settings():
+            self.ui_preferences = previous
+            return
+        self.documentation.capture_directory = directory
+        self.capture_folder_label.set(str(directory))
+
     def change_input_region(self, event=None):
         index = REGIONS.index(self.ocr_input_region.get())
         self.auto_body.set(index != 0)
@@ -286,7 +301,7 @@ class SettingsMixin:
             messagebox.showinfo(title, intro+str(folder)+'\n\n'+str(exc), parent=parent)
 
     def open_data_folder(self):
-        self.open_folder(DATA, 'Data folder', 'Captures, confirmed readings and logs are in:\n')
+        self.open_folder(DATA, 'Data folder', 'Confirmed readings and logs are in:\n')
 
     def show_config_warnings(self):
         warnings = configuration_diagnostics()['warnings']
