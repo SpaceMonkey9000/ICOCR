@@ -1,0 +1,12 @@
+{
+  "images": 108,
+  "correct": 107,
+  "errors": [
+    "test/SOP/8872957192_cc5034b20a_o_IC_0001.jpg"
+  ],
+  "all_top1_match_recorded": true,
+  "max_probability_difference": 4.76837158203125e-07,
+  "max_preprocessing_difference": 0.0,
+  "cpu_inference_ms_median": 6.887460000001511,
+  "cpu_inference_ms_p95": 16.29798169999503
+}

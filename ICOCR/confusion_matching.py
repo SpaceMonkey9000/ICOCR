@@ -98,14 +98,15 @@ def _edits(observed, target):
     return edits
 
 
-def candidates(text, records, owner=None):
+def candidates(text, records, owner=None, *, suffix_limit=MAX_SUFFIX, index=None):
     """Every database name reachable by confusion substitutions (any count)."""
     key = text.strip().upper()
     if key in records or not re.fullmatch(r'[A-Z0-9-]{4,24}', key) or not _mixed(key):
         return []
-    index = fold_index(records, owner)
+    if index is None:
+        index = fold_index(records, owner)
     found = []
-    for n in range(0, MAX_SUFFIX + 1):
+    for n in range(suffix_limit + 1):
         base, suffix = (key[:-n], key[-n:]) if n else (key, '')
         if len(base) < 4:
             break

@@ -114,6 +114,8 @@ def label(row, kind):
         note = row['function_summary']
     elif row.get('selected_database_match'):
         note = 'DB identity match'
+    elif row.get('corrected_alias_suggestions'):
+        note = 'corrected alias candidate — identity unknown'
     elif row.get('database_matches'):
         note = 'DB suggestions — identity unknown'
     elif kind == LINE:

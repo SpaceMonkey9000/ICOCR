@@ -1,82 +1,87 @@
-# Troubleshooting
+# ICOCR troubleshooting
 
-## Setup and launch
+## Setup and start
 
-Run setup from the new release folder. CPU: `setup_windows.bat cpu`. CUDA:
-`setup_windows.bat cuda`. Both use the Windows Python Launcher for Python 3.11.
-A failed setup prints the failing dependency or diagnostic command; retain that
-output. The launcher uses only local environments or an explicit ICOCR_PYTHON
-path; obsolete sibling-folder discovery has been removed.
+From source, run setup in the application folder: `setup_qt_windows.bat` for CPU or
+`setup_qt_windows.bat cuda` for an NVIDIA GPU. Both need Python 3.11 (64-bit) through
+the Python Launcher and create `.venv-qt` or `.venv-qt-gpu`. If setup fails, keep its
+output: it names the dependency that failed. Start with `run_qt_windows.bat` or
+`run_qt_windows.bat cuda`.
 
-If both environments exist, the GPU environment is selected first. Force CPU
-inference with `run_windows.bat run --device cpu`. To select the CPU environment
-itself, set ICOCR_PYTHON to its absolute `Scripts\python.exe` path.
+A start-up failure is shown in a dialog and written to
+`%LOCALAPPDATA%\ICSuite\ICOCR\startup-error.log`.
+
+**"Close ICOCR, ICDB and any DATA updater, then retry".** A DATA updater holds the
+DATA folder. Wait for it to finish, or close it.
+
+## Configuration warnings
+
+At start-up ICOCR checks its settings and rule files. A warning names each missing or
+invalid file and the invalid field. An invalid file is replaced by its bundled
+defaults for that session; the other files stay active, and your file is not
+overwritten. Fix the file and restart.
+
+To check the configuration without starting the OCR engine:
+
+```bat
+.venv-qt\Scripts\python tools\check_config.py
+```
 
 ## GPU
 
-**Settings → Tools** shows the active OCR processor; a CPU fallback there means
-CUDA is not in use, and `DATA/ICOCR.log` gives the reason. CUDA execution requires
-a compatible NVIDIA driver and the pinned ONNX/CUDA/cuDNN dependencies installed
-by the GPU setup (the GPU installer bundles them). The application loads the NVIDIA DLLs on Windows.
-Do not install CPU and GPU ONNX Runtime distributions together in one environment;
-they provide the same Python module. Re-running the appropriate setup removes
-both distributions from that environment before reinstalling the selected one.
+**Settings → Tools** shows the active OCR processor. If it says CPU, CUDA is not in
+use, and `DATA\ICOCR.log` gives the reason. CUDA needs a compatible NVIDIA driver and
+the GPU setup. Do not install the CPU and GPU ONNX Runtime packages in one
+environment; re-running setup removes both before installing the one you chose.
 
-A CUDA request in the normal application may fall back to CPU. Read the runtime
-status and log for the reason. Device selection and real-time performance must be
-checked on the target Windows machine.
+To force the CPU in the GPU environment, set `ICLENS_DEVICE=cpu` before starting.
 
 ### CUDA slower than CPU
 
-RapidOCR 1.4.4 asks cuDNN to benchmark every convolution algorithm
-(`EXHAUSTIVE`) for each new input size. Selection and body-crop sizes change
-between scans, so the GPU re-tuned on almost every scan. ICOCR now uses
-`HEURISTIC` for the OCR and chip-detector CUDA sessions; the runtime label in
-Settings → Tools shows the active mode. To compare modes, set the variable before
-starting, for example:
+cuDNN can benchmark every algorithm for each new input size, and selection sizes
+change between scans. ICOCR therefore uses the `HEURISTIC` search mode by default.
+To compare, set the mode before starting:
 
 ```bat
 set "ICOCR_CUDNN_SEARCH=EXHAUSTIVE"
-run_windows.bat run --device cuda
+run_qt_windows.bat cuda
 ```
 
 Accepted values are `HEURISTIC` (default), `DEFAULT` and `EXHAUSTIVE`.
 
 ## Camera
 
-Close other applications using the same capture device if opening fails. Re-select
-the device, try the other backend, or request a lower resolution/frame rate. MJPG
-support depends on the capture device. Stop and restart after changing formats.
+- Close other programs that use the same camera.
+- Choose the camera again, try the other back end in Settings → Camera settings, or
+  choose a lower resolution or frame rate. Changes apply when the camera next starts.
 
-## Missing or wrong markings
+## Missing or wrong readings
 
-Select one chip closely enough to exclude unrelated board text without cutting
-characters off. Check focus, lighting and glare. Diagnostics distinguishes no
-OCR text, rejected readings, conflicts and weak database evidence.
+- Select one chip closely: the whole marking, as little other board text as possible.
+- Check focus (Focus peaking helps), lighting and glare.
+- The Diagnostics tab shows whether OCR found no text, rejected a reading, found a
+  conflict or had weak database evidence.
+- Try the same saved image with **Fast scan** and **Detect component body before
+  OCR** switched on and off.
+- **Prototype: OCR only inside detected IC bodies** reads nothing if no body is
+  detected. Switch it off for chips the detector misses.
+- Matching does not repair character confusions such as D/0 or I/1 on its own; the
+  OCR correction rules handle known cases.
+- An asterisk means the catalogue has several variants or descriptions for the part,
+  not that the reading is uncertain.
 
-Compare Fast scan on/off and body cropping on/off on the same saved image.
-A chip outline is not proof of a correct OCR crop. Detector-generated selections
-have lower measured accuracy on the bundled labelled set than the manual
-selections; body detection remains experimental. An unsuccessful cropped scan
-retries the full selection once, so those scans take longer.
+## No pinout, or an old one
 
-After the initial retry budget, unresolved live targets retry every five seconds.
-An explicit Scan starts another acquisition. Matching does not repair character
-confusions such as D/0 or I/1. An asterisk identifies multiple catalogue variants
-or descriptions, not recognition certainty.
+ICOCR shows pinouts that ICDB has published. After changing a pinout in ICDB, save and
+publish it there, then use **Settings → Tools → Reload database** in ICOCR.
 
-## Database and reports
+## Open in ICDB or Add to ICDB does not work
 
-Use the Component Database Builder schema, then Reload database after changing
-it externally. The catalogue is not bundled. Open data folder exposes the log
-and confirmed-reading snapshots for diagnosis. Session history is cleared when the app
-closes; click logs and saved matches persist separately.
+ICOCR starts ICDB from its source folder, which needs `.venv-qt` (run ICDB's
+`setup_qt_windows.bat`). If ICOCR asks for the ICDB folder, choose the folder that
+contains `icdb_qt.py`. Installed `ICDB.exe` builds are not supported yet.
 
-## Configuration defaults active (0.8.3.9)
+## Reporting a problem
 
-A startup warning names each missing/invalid JSON file and the invalid field.
-Run `run_windows.bat config-check` for the same diagnosis without loading OCR.
-Correct the file and restart. The loader does not overwrite your edits. A bad
-file uses that file's complete bundled defaults, while other valid files remain
-active. Root-level `marking_brands.json` and `line_weights.json` are no longer read;
-use the new files documented in [config/README.md](../config/README.md).
+Include the version from the window title, `DATA\ICOCR.log`, the Diagnostics text for
+the scan and, if possible, a capture of the frame.

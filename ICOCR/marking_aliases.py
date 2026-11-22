@@ -51,9 +51,9 @@ def matches(catalog, text):
     if not parsed:
         return []
     prefix, family, number, suffix = parsed.groups()
-    if family not in RULES['families'] or (suffix and suffix not in RULES['suffixes']):
+    if family not in set(RULES['families']) | {'AHC', 'AHCT'} or (suffix and suffix not in RULES['suffixes'] and not (family in ('HC', 'HCT') and suffix == 'A')):
         return []
-    if not prefix and (not RULES['abbreviations'] or suffix):
+    if not prefix and (not RULES['abbreviations'] or (suffix and not (family in ('HC', 'HCT') and suffix == 'A'))):
         return []  # no chained abbreviation + suffix inference
     if prefix and not suffix:
         return []

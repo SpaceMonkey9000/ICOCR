@@ -28,6 +28,24 @@ def part_pattern(text):
     return row['name'] if row else ''
 
 
+def weak_prefix_hint(text):
+    """A broad two-letter prefix with little numeric structure is only a hint.
+
+    Strict device syntax and longer numeric identifiers keep their strength.
+    No database identity is established or removed here.
+    """
+    key = text.strip().upper()
+    if any(pattern.fullmatch(key) for _, pattern in PATTERNS):
+        return False
+    from prefix_rules import marking_rule
+    rule, _ = marking_rule(key)
+    if not rule or rule.get('recipe') != 'prefix_hints':
+        return False
+    match = re.match(r'^([A-Z]+)[0-9]', key)
+    return bool(match and len(match.group(1)) == 2 and
+                max((len(s) for s in re.findall(r'[0-9]+', key)), default=0) < 3)
+
+
 # Whole-line grammars, not free concatenation. No joining logos, lot/date text,
 # two independent parts or different OCR boxes. Preserve the original elsewhere.
 _SPACED = tuple(re.compile(row['pattern']) for row in _FAMILIES['spaced_patterns'] if row['enabled'])

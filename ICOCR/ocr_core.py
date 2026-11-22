@@ -199,7 +199,8 @@ def select_candidates(observations, known=(), modes=3, show_all=False):
         support=len(values)
         mixed=any(c.isalpha() for c in key) and any(c.isdigit() for c in key)
         category=kind(key,known)
-        eligible=(mixed or key in known or (numeric_marking(key) and score >= tuning('ocr_core.numeric_min_score'))) and not (rule_enabled('exclude.pcb_reference') and REFERENCE.fullmatch(key)) and (
+        join_only = len(key) == 2 and key.isalpha() and key in _PREFIXES
+        eligible=not join_only and (mixed or key in known or (numeric_marking(key) and score >= tuning('ocr_core.numeric_min_score'))) and not (rule_enabled('exclude.pcb_reference') and REFERENCE.fullmatch(key)) and (
             (support>=2 and score>=tuning('selection.repeated_min_score')) or (support==1 and score>=(tuning('selection.single_fast_score') if modes==1 else tuning('selection.single_full_score'))))
         if not eligible and not show_all:
             continue
@@ -213,7 +214,7 @@ def select_candidates(observations, known=(), modes=3, show_all=False):
             conflict_evidence=[], dismissed_conflicts=[],
             raw_text=representative.get('raw_text', representative.get('text', key)),
             whitespace_joined=any(r.get('whitespace_joined', False) for r in values),
-            retention_eligible=eligible,
+            retention_eligible=eligible, join_only=join_only,
             orientation_alternative=all(r.get('orientation_alternative', False) for r in group['observations']),
             status='Numeric marking — identity unknown' if category=='numeric' else
                    'Saved marking match' if category=='saved' else
@@ -326,7 +327,7 @@ def line_tokens(text, score, rotation, mode, box):
     rows = []
     for token in re.findall(r'\b(?:MADE\s+IN|ASSEMBLED\s+IN|PRODUCT\s+OF)\b|[A-Za-z0-9][A-Za-z0-9/.-]*', text.upper()):
         key = normalize(token)
-        if len(key) >= 3:
+        if len(key) >= 3 or (len(key) == 2 and key in _PREFIXES and key.isalpha()):
             rows.append(dict(text=token, key=key, score=float(score), rotation=rotation,
                              mode=mode, box=box, origin_metadata=bool(origin_exclusion(token))))
     return rows

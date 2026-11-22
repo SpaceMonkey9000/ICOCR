@@ -173,7 +173,9 @@ def locate_body(image):
 
 def body_crop(image, detection):
     """Keep original pixels inside the body; neutralise only the surrounding PCB."""
-    box = np.asarray(detection.get('mask_polygon') or detection['box'],np.float32)
+    # OCR crop follows the straight four-edge package body, not the
+    # irregular YOLO segmentation contour. The latter remains metadata.
+    box = np.asarray(detection['box'],np.float32)
     h,w = image.shape[:2]
     lo = np.maximum(np.floor(box.min(axis=0)-3).astype(int),0)
     hi = np.minimum(np.ceil(box.max(axis=0)+4).astype(int),[w,h])

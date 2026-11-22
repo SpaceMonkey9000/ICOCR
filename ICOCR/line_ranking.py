@@ -201,8 +201,8 @@ def line_features(row):
         single_line_block=float(row.get('block_lines', 0) <= 1),
         part_shape=float(bool(re.match(r'[A-Z]{2}', key)) and longest_digit_run(key) >= 3),
         stem_suffix=float(bool(re.fullmatch(r'[0-9]{4,8}[A-Z]{1,3}', key))),
-        family_pattern=float(bool(row.get('part_pattern')) or
-                             (row.get('kind') == 'family' and not row.get('weak_family_hint'))),
+        family_pattern=float(not row.get('weak_family_hint') and
+                             (bool(row.get('part_pattern')) or row.get('kind') == 'family')),
         lot_shape=float(len(re.findall(r'[0-9]+', key)) >= 2 and longest_digit_run(key) == 1),
         date_prefix=float(bool(DATE_CODE_PREFIX.match(key))),
         numeric_only=float(key.isdigit()),
@@ -294,11 +294,25 @@ def rank(annotated, legacy):
         seen = {candidate_id(r) for r in legacy}
         pool = list(legacy) + [r for r in extended_pool(annotated) if candidate_id(r) not in seen]
     legacy_ids = [candidate_id(r) for r in legacy]
+    # Challenge only a weak later-line choice with a clear earlier mixed mark.
+    # This removes circular support without changing numeric/strong-family picks.
+    from marking_context import strong_marking, DATE_CODE_PREFIX
+    leader = legacy[0] if legacy else {}
+    weak_leader = bool(leader and not leader.get('trusted_database_matches') and
+                       not leader.get('part_pattern') and not strong_marking(leader) and
+                       leader.get('coded_line_rank') is not None and leader['coded_line_rank'] > 0)
+    alternatives = [r for r in legacy[1:] if weak_leader and
+                    r.get('coded_line_rank') == 0 and r.get('score', 0) >= .95 and
+                    r.get('score', 0) >= leader.get('score', 0) - .03 and
+                    r['key'][0].isalpha() and any(c.isdigit() for c in r['key']) and
+                    not DATE_CODE_PREFIX.match(r['key']) and not r.get('conflicts')]
+    alternate_ids = {candidate_id(r) for r in alternatives}
     for row in annotated:
         row['line_features'] = line_features(row)
         # The 0.8.3.2 rule order is evidence too: the model learns when block
         # position and text shape justify overriding it.
-        row['line_features']['rule_choice'] = float(bool(legacy_ids) and candidate_id(row) == legacy_ids[0])
+        row['line_features']['rule_choice'] = float(not alternatives and bool(legacy_ids) and candidate_id(row) == legacy_ids[0])
+        row['selection_reconsidered'] = bool(alternatives and candidate_id(row) == legacy_ids[0])
         row['line_features']['rule_eligible'] = float(candidate_id(row) in legacy_ids)
         row['line_score'] = logit(row['line_features'], model)
     pool.sort(key=lambda r: (bool(r['line_features']['db_exact']), bool(r['line_features']['db_base']),
@@ -309,16 +323,20 @@ def rank(annotated, legacy):
         pool.insert(0, guard)
     # The abstain threshold only guards picks beyond the 0.8.3.2 rules: a rule
     # choice is never withheld, a new choice needs a convincing score.
+    reconsidered = bool(pool and candidate_id(pool[0]) in alternate_ids and
+                        pool[0]['line_score'] - leader.get('line_score', 0) >= .35)
     threshold = model.get('abstain_below')
     abstained = None
     if (pool and threshold is not None and not pool[0].get('trusted_database_matches') and
-            not pool[0]['line_features']['rule_choice'] and pool[0]['line_score'] < threshold):
+            not pool[0]['line_features']['rule_choice'] and not reconsidered and pool[0]['line_score'] < threshold):
         abstained = pool[0].get('key')
         pool = []
     for row in annotated:
         terms = sorted(((name, model.get('weights', {}).get(name, 0.) * value)
                         for name, value in row['line_features'].items() if value), key=lambda t: -abs(t[1]))
         row['line_reason'] = ', '.join(f'{name} {value:+.2f}' for name, value in terms[:4] if abs(value) >= .05)
+        if row.get('selection_reconsidered'):
+            row['line_reason'] += '; initial-choice bonus withheld: competing earlier line'
     summary = dict(version=VERSION, weights_version=model.get('version', 'none'),
                    fitted_on=model.get('fitted_on', ''), block=block, context=context,
                    pool=[dict(key=r['key'], score=round(r['line_score'], 3)) for r in pool[:8]],

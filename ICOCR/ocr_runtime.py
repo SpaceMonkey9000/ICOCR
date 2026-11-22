@@ -222,6 +222,24 @@ def prepare_cuda_dlls(ort):
     _dll_ready = True
 
 
+def ocr_model_paths(data):
+    """Seed stock OCR weights once, then run from DATA/models/ocr."""
+    import shutil
+    import rapidocr_onnxruntime
+    import yaml
+    package=Path(rapidocr_onnxruntime.__file__).parent
+    config=yaml.safe_load((package/'config.yaml').read_text('utf-8'))
+    folder=Path(data)/'models'/'ocr';folder.mkdir(parents=True,exist_ok=True)
+    result={}
+    for section in ('Det','Cls','Rec'):
+        source=package/config[section]['model_path']
+        target=folder/source.name
+        if not target.exists():
+            temporary=target.with_suffix('.tmp');shutil.copy2(source,temporary);temporary.replace(target)
+        result[section.lower()+'_model_path']=str(target.resolve())
+    return result
+
+
 def create_engine(device=None, strict=False):
     import onnxruntime as ort
     # Keep local snapshot processing free of ONNX Runtime telemetry events.
@@ -232,7 +250,6 @@ def create_engine(device=None, strict=False):
         raise ValueError('Device must be auto, cpu or cuda')
     # Never oversubscribe small CPUs; the GUI and tracking threads also need cores.
     # 0.8.4.3: at most cpu_count-2 threads, and idle threads sleep (see configure_session_options).
-    from shared_data import ocr_model_paths
     from project_paths import DATA
     options = dict(intra_op_num_threads=thread_count(4), inter_op_num_threads=1, **ocr_model_paths(DATA))
     patch_rapidocr_session_options()

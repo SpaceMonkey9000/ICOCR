@@ -1,7 +1,5 @@
 """ICOCR user configuration and first-run initialization (0.8.9.7)."""
-import json
 import os
-import shutil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -18,6 +16,12 @@ def prepare_config(data=None):
         source = FACTORY/'settings.json'
         with SETTINGS_FILE.open('x', encoding='utf-8') as out:
             out.write(source.read_text('utf-8'))
+    grouping = CONFIG_DIR/'package_groups.json'
+    try:
+        with grouping.open('xb') as out:
+            out.write((FACTORY/'package_groups.json').read_bytes())
+    except FileExistsError:
+        pass
     from rule_modules import rules_directory
     destination = rules_directory()
     destination.mkdir(parents=True, exist_ok=True)
@@ -31,18 +35,7 @@ def prepare_config(data=None):
 
 
 def default_capture_directory():
-    """Pictures/ICOCR, respecting redirected Windows Pictures folders."""
-    pictures = Path.home() / 'Pictures'
-    if os.name == 'nt':
-        try:
-            import ctypes
-            buffer = ctypes.create_unicode_buffer(32768)
-            # CSIDL_MYPICTURES; query only, create the ICOCR folder on first save.
-            if ctypes.windll.shell32.SHGetFolderPathW(None, 0x27, None, 0, buffer) == 0 and buffer.value:
-                pictures = Path(buffer.value)
-        except (AttributeError, OSError):
-            pass
-    return pictures / 'ICOCR'
+    return ROOT.parent / 'DATA' / 'captures'
 
 
 def capture_directory(preferences):

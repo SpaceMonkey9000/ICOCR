@@ -1,0 +1,1 @@
+ICOCR UI update: moved the existing collapsible Identification details pane from Identify to Diagnostics, above the raw diagnostic report. Renamed Settings > Tools > Reload ICDB to Reload database. No recognition or database functionality changed.

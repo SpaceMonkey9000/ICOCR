@@ -6,6 +6,6 @@ ROOT = Path(__file__).resolve().parent
 def data_directory(environ=None):
     return shared_directory(ROOT, environ)
 
-DATA = data_directory()
+DATA = ROOT.parent / 'DATA'
 VALIDATION = ROOT / 'validation'
 SAMPLE_IMAGE = VALIDATION / 'images' / 'S20260928_0001(1).jpg'

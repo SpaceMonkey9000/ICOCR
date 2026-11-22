@@ -116,12 +116,13 @@ def bounded_part_match(left, right):
                                   min(MAX_AFFIX_CHARS, extra) + 1))
 
 
-_INDEX_CACHE_VERSION = 2   # 2: JSON format (0.8.8); bump when the indexing rules or the catalogue query change
+_INDEX_CACHE_VERSION = 3   # 2: JSON format (0.8.8); bump when the indexing rules or the catalogue query change
 
 
 class Catalog:
     def __init__(self,path):
         self.path=Path(path).resolve();self.records={}
+        self.exact_aliases = {}
         # mode=ro ensures a typo cannot create or modify a database.
         with closing(sqlite3.connect(self.path.as_uri()+'?mode=ro',uri=True)) as db:
             db.execute('PRAGMA query_only=ON')
@@ -129,16 +130,39 @@ class Catalog:
             ecols={r[1] for r in db.execute('PRAGMA table_info(entries)')}
             cf='c.function' if 'function' in ccols else "''"
             ef='e.function' if 'function' in ecols else "''"
+            # Source-backed catalogue entries retain their original evidence.
+            # Components created manually in ICDB have no entries row; include
+            # those without manufacturing fake source-list evidence.
             rows=db.execute(f'''SELECT c.part_number,c.manufacturer,c.family_hint,
                 s.name,e.line,e.package_or_interface,e.qualifiers,{cf},{ef}
                 FROM components c JOIN entries e ON e.component_id=c.id
-                JOIN sources s ON s.id=e.source_id WHERE e.status='source_listed' ''')
+                JOIN sources s ON s.id=e.source_id WHERE e.status='source_listed'
+                UNION ALL
+                SELECT c.part_number,c.manufacturer,c.family_hint,
+                'ICDB manual',NULL,'','',{cf},''
+                FROM components c
+                WHERE NOT EXISTS (SELECT 1 FROM entries e
+                    WHERE e.component_id=c.id AND e.status='source_listed') ''')
             seen=set()
             for row in rows:
                 if row in seen:continue
                 seen.add(row)
                 record=dict(zip(('part','manufacturer','family','source','line','package','qualifiers','component_function','entry_function'),row))
                 self.records.setdefault(row[0].strip().upper(),[]).append(record)
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='component_marking_aliases'").fetchone():
+                import json
+                aliases = db.execute("""SELECT a.marking,c.part_number,c.manufacturer,a.packages_json,a.source
+                    FROM component_marking_aliases a JOIN components c ON c.id=a.component_id""")
+                for marking, part, maker, packages, source in aliases:
+                    trace = dict(rule_id='icdb.exact_marking_alias', observed=marking,
+                                 resolved_base=part, source=source, label='ICDB marking alias')
+                    for record in self.records.get(part.strip().upper(), ()):
+                        if record['manufacturer'] == maker:
+                            self.exact_aliases.setdefault(marking, []).append(dict(
+                                record, match_type='verified_alias', identity_evidence='ICDB marking alias',
+                                alias_packages=json.loads(packages), applied_rule=trace))
+        from confusion_matching import fold_index
+        self.alias_fold_index = fold_index(self.exact_aliases)
         self.count=len(self.records)
         self._load_or_build_index()
 
@@ -267,6 +291,33 @@ class Catalog:
                 cache.popitem(last=False)
         return result
 
+    def explicit_marking_matches(self, text):
+        key = text.strip().upper()
+        aliases = getattr(self, 'exact_aliases', {}).get(key, ())
+        if not aliases:
+            return []
+        targets = {(r['part'].upper(), r.get('manufacturer') or '') for r in aliases}
+        return [*aliases, *(dict(r, match_type='exact') for r in self.records.get(key, ())
+                            if (r['part'].upper(), r.get('manufacturer') or '') not in targets)]
+
+    def corrected_alias_suggestions(self, text):
+        from confusion_matching import candidates, eligible
+        aliases = getattr(self, 'exact_aliases', {})
+        if not aliases or text.strip().upper() in self.records:
+            return []
+        result = {}
+        for correction in candidates(text, aliases, suffix_limit=0,
+                                     index=getattr(self, 'alias_fold_index', None)):
+            if not eligible(correction, unique=True):
+                continue
+            marking = correction['corrected_text']
+            # Retain literal catalogue entries for the corrected spelling as competitors.
+            for record in self.explicit_marking_matches(marking):
+                key = (marking, record['part'].upper(), (record.get('manufacturer') or '').casefold())
+                result.setdefault(key, dict(record, match_type='corrected_alias',
+                                            correction=correction, correction_eligible=False))
+        return list(result.values())
+
     def correction_matches(self, text):
         from confusion_matching import matches
         return matches(self, text)
@@ -305,7 +356,7 @@ def family_hint(text):
             return label + ' — pattern only'
     return ''
 
-def joined_markings(rows, catalog):
+def joined_markings(rows, catalog, *, patterns_override=None, resolve=None):
     """Join a wrapped part number only with spatial and catalogue evidence."""
     if catalog is None or not rule_enabled('join.wrapped'):
         return []
@@ -319,7 +370,7 @@ def joined_markings(rows, catalog):
     observations = [dict(row, **view) for row in rows[:64]
                     for view in views(row)[:8]]
     for first in observations:
-        patterns = [(second, exact) for start, second, exact in WRAPPED_PATTERNS
+        patterns = [(second, exact) for start, second, exact in (WRAPPED_PATTERNS if patterns_override is None else patterns_override)
                     if len(first['key']) <= 32 and start.fullmatch(first['key'])]
         if (not patterns or first.get('conflicts') or not first.get('box') or
                 first.get('orientation_alternative')):
@@ -355,7 +406,7 @@ def joined_markings(rows, catalog):
             key = first['key'] + second['key']
             if key in seen:
                 continue
-            matches = catalog.find(key)
+            matches = resolve(key) if resolve else catalog.find(key)
             names = {m['part'].upper() for m in matches}
             if all(applicable) and not any(m.get('match_type') == 'exact' for m in matches):
                 continue
@@ -363,7 +414,7 @@ def joined_markings(rows, catalog):
                                and len(names) != 1):
                 continue
             # A partial match may remove a printed suffix, never guess missing text.
-            if not any(m.get('match_type') == 'exact' or key.startswith(m['part'].upper())
+            if not any(m.get('match_type') in ('exact', 'abbreviated') or key.startswith(m['part'].upper())
                        for m in matches):
                 continue
             points = np.vstack([a, b])
@@ -379,11 +430,74 @@ def joined_markings(rows, catalog):
                 joined_from=[first['key'],second['key']],
                 observed_markings=[first.get('raw_text', first.get('text', first['key'])),
                                    second.get('raw_text', second.get('text', second['key']))],
-                wrapped_join=True, rotation=first.get('rotation', 0),
+                wrapped_join=True, join_only=False, rotation=first.get('rotation', 0),
                 join_evidence=[{k: view.get(k) for k in ('key', 'rotation', 'pass_id', 'box', 'score')}
                                for view in (first, second)]))
             seen.add(key)
     return joined
+
+
+
+
+def prefix_marking_derivatives(rows, catalog):
+    """Configured literal prefix + numeric continuation, with trusted DB base."""
+    if catalog is None or not rule_enabled('join.wrapped'):
+        return []
+    from ocr_core import _PREFIXES
+    prefixes = sorted({p for p in _PREFIXES if 2 <= len(p) <= 8 and p.isalpha()})
+    if not prefixes:
+        return []
+    starts = re.compile('(?:' + '|'.join(re.escape(p) for p in prefixes) + ')')
+    patterns = [(starts, re.compile(r'[0-9]{3,6}[A-Z]{1,3}'), False)]
+    def literal(key):
+        # No missing prefix inference or character correction in this join path.
+        return [m for m in trusted_matches(catalog.find(key), key)
+                if m.get('match_type') == 'exact' or
+                m.get('identity_evidence') == 'literal_base_with_suffix']
+    strong = [r for r in rows if r.get('score', 0) >= .85]
+    return joined_markings(strong, catalog, patterns_override=patterns, resolve=literal)
+
+
+def logic_marking_derivatives(rows, catalog):
+    """Bounded logic reconstruction; retain originals and require a unique DB base."""
+    if catalog is None:
+        return []
+    from marking_aliases import matches as aliases
+    families = r'(?:HC|HCT|AHC|AHCT)'
+    def resolve(key):
+        return trusted_matches(catalog.find(key), key) or aliases(catalog, key)
+    prepared = []
+    for row in rows[:64]:
+        key = row['key']
+        # ON logo and its enclosing ellipse can be recognised as ON or CON.
+        parsed = re.fullmatch(r'(?:ON|CON)(' + families + r')', key)
+        if parsed and row.get('score', 0) >= .85:
+            clean = parsed.group(1)
+            evidence = [dict(v, key=clean, text=clean) for v in
+                        (row.get('observation_evidence') or [row])]
+            prepared.append(dict(row, key=clean, text=clean,
+                                 observation_evidence=evidence, logo_stripped_from=key))
+        prepared.append(row)
+    result = []
+    if rule_enabled('join.wrapped'):
+        patterns = [(re.compile(families), re.compile(r'[0-9]{2,4}A?'), False)]
+        result.extend(joined_markings(prepared, catalog, patterns_override=patterns, resolve=resolve))
+    for row in rows[:64]:
+        key = row['key']
+        parsed = re.fullmatch('(' + families + r')([0-9O]{2,4})', key)
+        if (not parsed or 'O' not in parsed.group(2) or row.get('score', 0) < .9 or
+                row.get('conflicts') or row.get('orientation_alternative')):
+            continue
+        clean = parsed.group(1) + parsed.group(2).replace('O', '0')
+        target = '74' + clean
+        # This rule changes only O to zero in a known numeric field.
+        exact = [m for m in catalog.find(target)
+                 if m.get('match_type') == 'exact' and m['part'].upper() == target]
+        if len({m['part'].upper() for m in exact}) == 1:
+            result.append(dict(row, key=clean, text=clean,
+                observed_markings=[key], logic_corrected_from=key,
+                status='Logic numeric field corrected O to 0 — database supported'))
+    return result
 
 
 def joined_fragments(rows, catalog):
@@ -500,6 +614,9 @@ def trusted_matches(matches, text):
     exact=[m for m in matches if m.get('match_type') in ('exact','verified_alias','abbreviated','family_suffix') or
            (m.get('match_type') == 'corrected' and m.get('correction_eligible'))]
     if exact:
+        if any(m.get('match_type') == 'verified_alias' for m in exact) and len({
+                (m['part'].strip().upper(), (m.get('manufacturer') or '').casefold()) for m in exact}) > 1:
+            return []
         names={m['part'].strip().upper() for m in exact}
         return exact if len(names)==1 else []
     if not rule_enabled('match.literal_suffix'):
@@ -537,7 +654,15 @@ def correction_matches(catalog, text):
     return method(catalog, text) if callable(method) else []
 
 
+def explicit_marking_matches(catalog, text):
+    method = getattr(catalog, 'explicit_marking_matches', None)
+    return method(text) if method else []
+
+
 def resolved_matches(catalog, text):
+    explicit = explicit_marking_matches(catalog, text)
+    if explicit:
+        return trusted_matches(explicit, text)
     literal = trusted_matches(catalog.find(text), text)
     if not literal:
         from marking_aliases import matches
@@ -545,13 +670,13 @@ def resolved_matches(catalog, text):
     return literal or trusted_matches(correction_matches(catalog, text), text)
 
 
-def annotate(rows,catalog=None):
+def annotate(rows,catalog=None, *, package_prediction=None):
     result=[]
     rows = list(rows)
-    originals = [r for r in rows if not (r.get('fragment_join') or r.get('logo_stripped_from'))]
+    originals = [r for r in rows if not (r.get('fragment_join') or r.get('wrapped_join') or r.get('logic_corrected_from') or r.get('logo_stripped_from'))]
     present = {r['key'] for r in rows}
     # Derived rows already present (re-annotation) are kept, not derived again.
-    extra = joined_markings(rows, catalog) + [r for r in joined_fragments(originals, catalog) +
+    extra = prefix_marking_derivatives(originals, catalog) + logic_marking_derivatives(originals, catalog) + joined_markings(rows, catalog) + [r for r in joined_fragments(originals, catalog) +
                                               logo_stripped(originals, catalog) if r['key'] not in present]
     for original in rows + extra:
         row=dict(original)
@@ -571,15 +696,20 @@ def annotate(rows,catalog=None):
         else:
             row['database_matches']=catalog.find(text)
         row.pop('ocr_correction', None)
-        row['applied_rules'] = []
-        if catalog is not None and not row['exclusion_reason'] and not any(m.get('match_type') == 'exact' for m in row['database_matches']):
+        row['applied_rules'] = ([dict(rule_id='logic.numeric_O_to_0', observed=row['logic_corrected_from'], reconstructed=text)] if row.get('logic_corrected_from') else [])
+        explicit = (explicit_marking_matches(catalog, text)
+                    if catalog is not None and not row['exclusion_reason'] else [])
+        if explicit:
+            row['database_matches'] = explicit
+            row['applied_rules'] = [explicit[0]['applied_rule']]
+        if catalog is not None and not explicit and not row['exclusion_reason'] and not any(m.get('match_type') == 'exact' for m in row['database_matches']):
             from marking_aliases import matches as alias_matches
             aliases = alias_matches(catalog, text)
             if aliases:
                 row['database_matches'] = aliases
                 row['applied_rules'] = [aliases[0]['applied_rule']]
 
-        if catalog is not None and not origin_exclusion(text) and not any(
+        if catalog is not None and not explicit and not origin_exclusion(text) and not any(
                 m.get('match_type') in ('exact', 'abbreviated', 'family_suffix') for m in row['database_matches']):
             from prefix_rules import matches as prefix_matches
             candidates = prefix_matches(catalog, text)
@@ -593,7 +723,7 @@ def annotate(rows,catalog=None):
 
         row['correction_suggestions'] = []
         trusted = trusted_matches(row['database_matches'], text)
-        if (catalog is not None and not row['exclusion_reason'] and not trusted and
+        if (catalog is not None and not explicit and not row['exclusion_reason'] and not trusted and
                 not any(m.get('match_type') == 'rule_candidate' for m in row['database_matches'])):
             suggestions = correction_matches(catalog, text)
             row['correction_suggestions'] = suggestions
@@ -604,6 +734,43 @@ def annotate(rows,catalog=None):
                     row['database_matches'] = accepted
                     row['ocr_correction'] = dict(accepted[0]['correction'])
                     trusted = trusted_matches(accepted, text)
+        row['corrected_alias_suggestions'] = []
+        row.pop('corrected_alias_issue', None)
+        suggest_alias = getattr(catalog, 'corrected_alias_suggestions', None)
+        ordinary_correction = row.get('ocr_correction')
+        if (suggest_alias and (not trusted or ordinary_correction) and not explicit
+                and not row['exclusion_reason'] and row.get('score', 0) >= CORRECTION_MIN_SCORE
+                and not row.get('orientation_alternative')):
+            aliases = suggest_alias(text)
+            if not trusted:
+                row['corrected_alias_suggestions'] = aliases
+            elif aliases:
+                identity = lambda m: (m['part'].upper(), (m.get('manufacturer') or '').casefold())
+                targets = {identity(m) for m in trusted}
+                if {identity(m) for m in aliases} - targets:
+                    known = {(m['correction']['corrected_text'], identity(m)) for m in aliases}
+                    for match in trusted:
+                        key = (match['correction']['corrected_text'], identity(match))
+                        if key not in known:
+                            aliases.append(dict(match, correction_eligible=False))
+                            known.add(key)
+                    # Two destinations supported by the same OCR correction evidence.
+                    # Neither is eligible for automatic selection.
+                    row['corrected_alias_suggestions'] = aliases
+                    row.pop('ocr_correction')
+                    row['database_matches'] = []
+                    trusted = []
+        if row['corrected_alias_suggestions']:
+            from package_pinouts import compatible_corrected_aliases
+            compatible = compatible_corrected_aliases(row['corrected_alias_suggestions'], package_prediction)
+            if len(compatible) == 1:
+                resolved = dict(compatible[0], correction_eligible=True)
+                row['database_matches'] = trusted = [resolved]
+                row['ocr_correction'] = dict(resolved['correction'])
+                row['corrected_alias_suggestions'] = []
+            else:
+                row['corrected_alias_issue'] = ('Multiple corrected aliases fit' if compatible
+                                                else 'Corrected alias conflicts with detected package')
         if not row['applied_rules'] and not row.get('ocr_correction'):
             if any(m.get('identity_evidence') == 'literal_base_with_suffix' for m in trusted):
                 row['applied_rules'].append(dict(rule_id='legacy.literal_base_suffix', observed=text))
@@ -623,13 +790,16 @@ def annotate(rows,catalog=None):
             all({m['part'].strip().upper() for m in resolved_matches(catalog,other)} == names
                 for other in row['conflicts']))
         row['selected_database_match'] = choose_match(row['trusted_database_matches'], text)
-        row['database_ambiguous'] = database_ambiguous(row['database_matches'])
+        row['alias_ambiguous'] = bool(explicit and not trusted)
+        row['database_ambiguous'] = row['alias_ambiguous'] or database_ambiguous(row['database_matches'])
         row['function_summary']=function_summary(row['trusted_database_matches'], row['selected_database_match'])
         row['family_hint']=family_hint(text)
         row['part_pattern'] = part_pattern(row['key'])
         # A lone W prefix plus digits is too broad to outrank a supported
         # block marking. It remains a candidate, never a hard exclusion.
-        row['weak_family_hint'] = bool(row.get('kind') == 'family' and
+        from marking_rules import weak_prefix_hint
+        row['weak_prefix_hint'] = weak_prefix_hint(row['key'])
+        row['weak_family_hint'] = row['weak_prefix_hint'] or bool(row.get('kind') == 'family' and
             re.fullmatch(r'W[0-9]+[A-Z]{0,2}', row['key']) and not row['part_pattern'])
         row['observed_markings'] = list(row.get('observed_markings') or
             [row.get('raw_text', text)])
@@ -645,6 +815,26 @@ def annotate(rows,catalog=None):
                                  'numeric' if row['key'].isdigit() else 'unverified')
         row['display_rank']=row.get('rank',0)+(tuning('ranking.database_bonus') if row['trusted_database_matches'] else 0)
         result.append(row)
+    # A database-supported literal reading must still account for every conflict.
+    by_key = {r['key']: r for r in result}
+    for row in result:
+        row['logo_prefix_conflicts'] = []
+        if not row.get('conflicts') or not row.get('trusted_database_matches'):
+            continue
+        names = {m['part'].strip().upper() for m in row['trusted_database_matches']}
+        consistent = True
+        for key in row['conflicts']:
+            if {m['part'].strip().upper() for m in resolved_matches(catalog, key)} == names:
+                continue
+            other = by_key.get(key)
+            if other is not None and logo_prefix_conflict(row, other, catalog):
+                row['logo_prefix_conflicts'].append(dict(
+                    rule_id='conflict.leading_TL_logo', observed=key,
+                    retained=row['key'], reason='Leading TL merged with literal HEF/HCF marking'))
+            else:
+                consistent = False
+        row['database_identity_consistent'] = consistent
+        row['applied_rules'].extend(row['logo_prefix_conflicts'])
     # Geometry views are read-only inputs to the neighbour search; build once.
     expanded = expand_views(result)
     for row in result:
@@ -674,19 +864,55 @@ def annotate(rows,catalog=None):
             row['orientation_pattern_supported'] = True
     return sorted(result,key=lambda r:(
         any(m.get('match_type')=='exact' for m in r['trusted_database_matches']),
-        bool(r['trusted_database_matches']),bool(r['part_pattern']),
+        bool(r['trusted_database_matches']),bool(r['part_pattern']) and not r.get('weak_family_hint'),
         r.get('kind') == 'family' and not r.get('weak_family_hint'),
         *selection_order(r), r['display_rank']),reverse=True)
 
+
+def logo_prefix_conflict(winner, other, catalog):
+    """A retained literal HEF/HCF reading can disambiguate a merged TL logo.
+
+    Do not strip arbitrary prefixes, substitute characters, or override another
+    database identity. Both physical observations remain in the diagnostics.
+    """
+    if not rule_enabled('join.logo'):
+        return False
+    key, expanded = winner['key'], other['key']
+    if (expanded != 'TL' + key or
+            not re.fullmatch(r'(?:HEF|HCF)4[05][0-9]{2,3}[A-Z]{0,3}', key) or
+            winner.get('score', 0) < .9 or other.get('score', 0) < .9 or
+            winner.get('orientation_alternative') or other.get('orientation_alternative') or
+            not winner.get('box') or not other.get('box') or
+            other.get('trusted_database_matches') or resolved_matches(catalog, expanded)):
+        return False
+    trusted = winner.get('trusted_database_matches', [])
+    if not trusted or any(m.get('match_type') not in ('exact', 'partial', 'family_suffix')
+                          for m in trusted):
+        return False
+    # Only literal winner/base evidence qualifies, never a corrected identity.
+    if not all(key.startswith(m['part'].strip().upper()) for m in trusted):
+        return False
+    import numpy as np
+    from ocr_core import same_text_region
+    a, b = np.asarray(winner['box'], dtype=float), np.asarray(other['box'], dtype=float)
+    u, v = a[1] - a[0], b[1] - b[0]
+    lengths = np.linalg.norm(u), np.linalg.norm(v)
+    if min(lengths) < 1 or np.dot(u / lengths[0], v / lengths[1]) < .94:
+        return False
+    return same_text_region(winner['box'], other['box'])
+
+
 def describe(matches):
     if not matches:return 'No database name match.'
-    kind=('Abbreviated marking' if any(r.get('match_type')=='abbreviated' for r in matches) else
+    kind=('Corrected ICDB marking alias' if any(r.get('match_type')=='corrected_alias' for r in matches) else
+          'ICDB marking alias' if any(r.get('match_type')=='verified_alias' for r in matches) else
+          'Abbreviated marking' if any(r.get('match_type')=='abbreviated' for r in matches) else
           'Package suffix' if any(r.get('match_type')=='family_suffix' for r in matches) else
           'Corrected OCR' if any(r.get('match_type')=='corrected' for r in matches) else
           'Partial' if any(r.get('match_type')=='partial' for r in matches) else 'Exact')
     lines=[kind+' database name match — source-listed, identity unverified.']
     if database_ambiguous(matches):
-        lines.append('* Multiple database variants/descriptions; one representative is displayed. All matches follow.')
+        lines.append('Multiple database candidates follow.')
     for r in matches:
         lines.append(f"{r['part']} | {r['manufacturer'] or 'manufacturer not stated'}\n"
             f"{r['source']} line {r['line']} | package/interface: {r['package'] or 'not stated'}"
@@ -751,6 +977,12 @@ def live_candidates(rows, catalog=None, *, annotated=False):
                            not r.get('orientation_alternative') for r in annotated)
     for row in annotated:
         row['selection_block_reason'] = ''
+        if row.get('join_only'):
+            row['selection_block_reason'] = 'Short prefix retained for joining only'
+            continue
+        if re.fullmatch(r'(?:LM|L|MC|UA|KA)7[89]L', row['key']) and row.get('database_ambiguous'):
+            row['selection_block_reason'] = 'Incomplete regulator marking — output voltage unresolved'
+            continue
         matches=row.get('trusted_database_matches', [])
         if (row.get('exclusion_reason') or not row.get('box') or
                 (row.get('conflicts') and not row['database_identity_consistent'])):
@@ -775,6 +1007,6 @@ def live_candidates(rows, catalog=None, *, annotated=False):
         candidates=[r for r in candidates if r.get('trusted_database_matches')]
     return sorted(candidates,key=lambda r:(
         any(m.get('match_type') in ('exact','verified_alias') for m in r.get('trusted_database_matches',[])),
-        bool(r.get('trusted_database_matches')),bool(r.get('part_pattern')),
+        bool(r.get('trusted_database_matches')),bool(r.get('part_pattern')) and not r.get('weak_family_hint'),
         r.get('kind') == 'family' and not r.get('weak_family_hint'),
         *selection_order(r), r.get('score',0)),reverse=True)

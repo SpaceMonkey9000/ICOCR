@@ -339,10 +339,10 @@ def _shift(value, offset, seen=None):
             _shift(child, offset, seen)
 
 
-def plan(engine, image, *, detections=None, offset=(0, 0), cancelled=None, max_chips=MAX_CHIPS):
+def plan(engine, image, *, detections=None, offset=(0, 0), cancelled=None, max_chips=MAX_CHIPS, detector_only=False):
     """Chips to read in ``image`` (the selection), strongest first."""
     started = time.perf_counter()
-    lines, passes = discover_lines(engine, image, cancelled)
+    lines, passes = ([], 0) if detector_only else discover_lines(engine, image, cancelled)
     blocks = _merge_overlapping(group_lines(lines), image.shape)
     chips = merge_detector_bodies(blocks, detections, image.shape, offset)
     chips.sort(key=lambda c: c['strength'], reverse=True)
@@ -366,7 +366,8 @@ def plan(engine, image, *, detections=None, offset=(0, 0), cancelled=None, max_c
 
 
 def read_chips(engine, image, *, read, auto_body=True, detections=None, offset=(0, 0),
-               cancelled=None, max_chips=MAX_CHIPS, **ocr_options):
+               package_options=None, package_frame=None, cancelled=None, max_chips=MAX_CHIPS,
+               detector_only=False, **ocr_options):
     """Read every chip in ``image``.
 
     ``read`` is ``body_scan.read_with_body`` (injected for tests). Results use
@@ -374,7 +375,7 @@ def read_chips(engine, image, *, read, auto_body=True, detections=None, offset=(
     """
     started = time.monotonic()
     layout = plan(engine, image, detections=detections, offset=offset,
-                  cancelled=cancelled, max_chips=max_chips)
+                  cancelled=cancelled, max_chips=max_chips, detector_only=detector_only)
     results = []
     for index, chip in enumerate(layout['chips']):
         if cancelled is not None and cancelled():
@@ -395,8 +396,18 @@ def read_chips(engine, image, *, read, auto_body=True, detections=None, offset=(
                                  task='segment')
         error = None
         try:
+            options = dict(ocr_options)
+            if package_options is not None:
+                options.update(package_options=package_options, package_image=region_image)
+                if package_frame is not None:
+                    fh, fw = package_frame.shape[:2]
+                    ox, oy = offset
+                    options.update(package_frame=package_frame,
+                        package_roi=((ox+x0)/fw, (oy+y0)/fh, (ox+x1)/fw, (oy+y1)/fh))
+            if detector_only:
+                options['allow_recovery'] = False
             rows, elapsed = read(engine, work, enabled=auto_body or detection is not None,
-                                 detection=detection, **ocr_options)
+                                 detection=detection, **options)
             # 0.8.4.3: one copy of both (shared rows stay shared, so the joint
             # shift below moves each nested box exactly once, as before).
             rows, diagnostics = deepcopy((rows, engine.last_diagnostics))
@@ -445,17 +456,6 @@ def unconfirmed(decision):
     return None
 
 
-def to_frame(chips, offset):
-    """Selection coordinates -> frame coordinates (in place)."""
-    ox, oy = offset
-    for chip in chips:
-        _shift(chip, [ox, oy])
-        x0, y0, x1, y1 = chip['region']
-        chip['region'] = [x0 + ox, y0 + oy, x1 + ox, y1 + oy]
-        chip['core'] = (np.asarray(chip['core'], float) + [ox, oy]).tolist()
-    return chips
-
-
 def deduplicate(results):
     """Overlapping regions can read the same printed line twice: keep one."""
     kept = []
@@ -474,62 +474,3 @@ def deduplicate(results):
     for number, chip in enumerate(kept, 1):
         chip['number'] = number
     return kept
-
-
-EXACT_COLOUR = '#65f2c0'      # same colours as the single-chip overlay
-OTHER_COLOUR = '#ffd37a'
-WEAK_COLOUR = '#b8c4cf'
-
-
-def reading_of(chip):
-    """The row shown for a chip: technician choice, else the automatic target."""
-    return chip.get('choice') or chip.get('target')
-
-
-def label_for(chip):
-    """Marking text shown for one chip."""
-    row = reading_of(chip)
-    if chip.get('error') and row is None:
-        return 'OCR error'
-    if row is None:
-        return 'No reading'
-    if row.get('ocr_correction') and row.get('resolved_partnumber'):
-        return row['resolved_partnumber']
-    return row.get('text') or row.get('key', '')
-
-
-def describe(chip, database_loaded):
-    """(label, colour) for the overlay; mirrors the single-chip wording."""
-    row = reading_of(chip)
-    title = f"{chip.get('number', '?')}  " + label_for(chip)
-    if row is None:
-        return title + ('\n' + chip['error'] if chip.get('error') else ''), WEAK_COLOUR
-    matches = row.get('trusted_database_matches', [])
-    exact = bool(matches) and all(m.get('match_type') == 'exact' for m in matches)
-    colour = EXACT_COLOUR if exact and not row.get('database_ambiguous') else OTHER_COLOUR
-    description = row.get('function_summary') or ('No database match' if database_loaded
-                                                   else 'Load database for description')
-    if row.get('technician_choice'):
-        title += '  ✓'
-    elif row.get('multi_unconfirmed'):
-        title, colour = title + '  (unconfirmed)', WEAK_COLOUR
-    elif not matches:
-        title += '  (provisional)'   # as the single-chip 'Provisional:' prefix
-    if row.get('ocr_correction'):
-        description = 'Corrected from ' + row.get('text', '') + ': ' + description
-    elif matches and not exact:
-        description = 'Partial match: ' + description
-    if len(description) > 90:
-        description = description[:87] + '…'
-    return title + '\n' + description, colour
-
-
-def list_label(chip):
-    row = reading_of(chip)
-    mark = ('✓ ' if row is not None and row.get('technician_choice') else
-            '★ ' if chip.get('selected') is not None and row is chip.get('selected') else '  ')
-    text = label_for(chip)
-    if row is not None and row.get('multi_unconfirmed'):
-        text += ' (unconfirmed)'
-    summary = (row or {}).get('function_summary')
-    return f"Chip {chip.get('number', '?')}: {mark}{text}" + (f' — {summary}' if summary else '')

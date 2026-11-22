@@ -1,5 +1,9 @@
 """One capture worker owns the device. Only its latest frame is retained.
 
+Each published frame is a new array that is never written to again, so
+consumers may keep references without copying. ``wait`` lets a consumer sleep
+until the next frame instead of polling on a timer.
+
 The application joins this thread (with a timeout) on exit so that
 cap.release() in run() executes before the process ends (0.8.4.3).
 """
@@ -13,7 +17,8 @@ class Capture(threading.Thread):
         super().__init__(daemon=True)
         self.params = index, backend, width, height, fps, mjpg
         self.stop_event = threading.Event()
-        self.lock = threading.Lock()
+        self.lock = threading.Condition()
+        self.finished = False
         self.latest = None
         self.seq = 0
         self.timestamp = 0
@@ -21,6 +26,13 @@ class Capture(threading.Thread):
 
     def snapshot(self):
         with self.lock:
+            return self.latest, self.seq, self.timestamp, self.status
+
+    def wait(self, seq, timeout=.1):
+        """Block until a frame newer than ``seq`` exists, the device has failed
+        or stopped, or ``timeout`` seconds pass; then return ``snapshot()``."""
+        with self.lock:
+            self.lock.wait_for(lambda: self.seq != seq or self.finished, timeout)
             return self.latest, self.seq, self.timestamp, self.status
 
     def run(self):
@@ -35,6 +47,9 @@ class Capture(threading.Thread):
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             cap.set(cv2.CAP_PROP_FPS, fps)
+            # Keep the driver queue short so the preview shows the newest frame
+            # (ignored by back ends that do not support it).
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             # 0.8.4.3: the driver FPS is read once; querying it per frame is a
             # driver round trip (DirectShow/MSMF) on every captured frame.
             driver_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -58,10 +73,14 @@ class Capture(threading.Thread):
                     self.seq += 1
                     self.timestamp = time.monotonic()
                     self.status = status
+                    self.lock.notify_all()
         except Exception as exc:
             with self.lock:
                 self.latest = None
                 self.status = str(exc)
         finally:
+            with self.lock:
+                self.finished = True
+                self.lock.notify_all()
             if cap is not None:
                 cap.release()

@@ -59,13 +59,6 @@ def plausible_body(crop, detection):
                 reason=f'Body outline too small for the selection ({fraction:.1%} < {minimum:.0%})')
 
 
-def geometric_fallback(crop, reason):
-    """Preserve the historical model-unavailable -> geometric fallback, visibly."""
-    result = locate_body(crop)
-    result.update(requested_source='model', model_fallback_reason=reason)
-    return result
-
-
 def _recovery_read(engine, crop, read_started, ocr_options):
     """Full-selection recovery read. A live scan gets only what is left of the
     live retry budget that the body-crop read started (0.8.8), not a fresh one."""
@@ -90,7 +83,7 @@ def _recovery_read(engine, crop, read_started, ocr_options):
             engine.live_retry_budget = previous
 
 
-def read_with_body(engine, crop, *, enabled=False, detection=None, **ocr_options):
+def read_with_body(engine, crop, *, enabled=False, detection=None, package_options=None, package_image=None, package_frame=None, package_roi=None, allow_recovery=True, **ocr_options):
     """detection: optional precomputed body (e.g. from the trained detector);
     otherwise the geometric locator runs when enabled."""
     started = time.monotonic()
@@ -100,6 +93,7 @@ def read_with_body(engine, crop, *, enabled=False, detection=None, **ocr_options
         detection = (locate_body(crop) if enabled else
                      dict(status='disabled',reason='Body cropping disabled',box=None,score=0.,milliseconds=0.))
     detection = plausible_body(crop, detection)
+    package_detection = dict(detection)
     work,offset = body_crop(crop,detection) if detection['status']=='detected' else (crop,[0,0])
     # 0.8.3.4: a failed body-crop pass is followed by a full-selection recovery
     # with its own retry, so the crop pass defers its no-selection retry.
@@ -150,7 +144,7 @@ def read_with_body(engine, crop, *, enabled=False, detection=None, **ocr_options
         detection['crop_size'] = [work.shape[1],work.shape[0]]
     # One bounded recovery scan, using original pixels and selection coordinates.
     # Do not recurse: recovery must never reapply the same failing body mask.
-    if (getattr(engine, 'acquisition_only', False) is not True and detection['status'] == 'applied' and
+    if (allow_recovery and getattr(engine, 'acquisition_only', False) is not True and detection['status'] == 'applied' and
             not diagnostics.get('scan_result', {}).get('selected')):
         cropped_diagnostics = diagnostics
         full_rows, _ = _recovery_read(engine, crop, read_started, ocr_options)
@@ -190,6 +184,36 @@ def read_with_body(engine, crop, *, enabled=False, detection=None, **ocr_options
         reason='; '.join(x for x in (detection.get('model_fallback_reason'), detection.get('reason')) if x),
         full_selection_retry=diagnostics.get('body_recovery', {}))
     timings = diagnostics.setdefault('timings',{})
+    from package_classifier import classify_scan
+    package = classify_scan(crop if package_image is None else package_image,
+                            package_detection, package_options, package_frame, package_roi)
+    diagnostics['package_classification'] = package
+    decision = diagnostics.get('scan_result')
+    if decision is not None:
+        from package_pinouts import detected_group
+        # Package prediction is produced after OCR. Re-rank affected scans so
+        # list, overlay and History consume the same package-checked decision.
+        if detected_group(package) and any(
+                row.get('corrected_alias_suggestions') or
+                (row.get('selected_database_match') or {}).get('match_type') == 'corrected_alias'
+                for row in decision.get('all_candidates', ())):
+            observations = diagnostics.get('all_candidates', rows)
+            eligible = diagnostics.get('candidates', rows)
+            decision = build_scan_result(eligible, observations, ocr_options.get('catalog'),
+                                         previous=decision.get('selected'), package_prediction=package)
+            if detection['status'] == 'applied':
+                for row in decision['all_candidates']:
+                    row['body_box'] = detection['box']
+                if decision.get('provisional') is not None:
+                    decision['provisional']['body_box'] = detection['box']
+            diagnostics['scan_result'] = decision
+            rows = decision['display_candidates']
+        for row in decision.get('all_candidates', ()):
+            if (row.get('corrected_alias_suggestions') or
+                    (row.get('selected_database_match') or {}).get('match_type') == 'corrected_alias'):
+                row['package_classification'] = package
+        decision['package_classification'] = package
+    timings['package_classification_ms'] = package['milliseconds']
     timings['body_detection_ms'] = detection['milliseconds']
     elapsed = time.monotonic()-started
     timings['total_ms'] = elapsed*1000

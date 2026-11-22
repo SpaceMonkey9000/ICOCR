@@ -1,34 +1,15 @@
-"""Confirmed readings and clean captures; no OCR decisions are changed.
+"""Clean full-resolution captures written on a background thread.
 
-0.8.3.8: the per-scan encounter log is replaced. A record is written only when
-the technician clicks a reading (or edits one): that click confirms the text.
-Each confirmation saves the scan snapshot as JPEG and one CSV row.
-
-0.8.8: writes run on one daemon thread fed by a queue (as ``click_log``), so a
-save stuck on a slow or unreachable folder can no longer keep the process alive
-after the window has closed. Requests are written in submission order.
+0.8.8: writes run on one daemon thread fed by a queue, so a save stuck on a
+slow or unreachable folder can no longer keep the process alive after the
+window has closed. Requests are written in submission order.
 """
-import csv
-import io
-from datetime import datetime, timezone
 from pathlib import Path
 import queue
 import threading
 import cv2
 
 from user_paths import default_capture_directory
-
-
-def stamp():
-    return datetime.now(timezone.utc).isoformat()
-
-
-def json_default(value):
-    if hasattr(value, 'tolist'):
-        return value.tolist()
-    if hasattr(value, 'item'):
-        return value.item()
-    raise TypeError(type(value).__name__)
 
 
 class Documentation:
@@ -47,6 +28,7 @@ class Documentation:
         self.jobs = queue.Queue()
         self.slots = threading.BoundedSemaphore(4)
         self.sequence = 0
+        self._numbered = set()     # capture folders whose existing numbers were read
         self.closed = False
         self._thread = None
         self._lock = threading.Lock()
@@ -83,7 +65,8 @@ class Documentation:
 
     def capture(self, frame):
         # Freeze the destination now; a settings change must not redirect queued saves.
-        return self._submit('capture', self._capture, frame.copy(), self.capture_directory)
+        # Frames are never modified after capture, so no copy is needed here.
+        return self._submit('capture', self._capture, frame, self.capture_directory)
 
     @staticmethod
     def _jpeg(image, quality):
@@ -100,9 +83,14 @@ class Documentation:
         directory = Path(directory) if directory is not None else self.capture_directory
         directory.mkdir(parents=True, exist_ok=True)
         encoded = self._jpeg(frame, self.CAPTURE_JPEG_QUALITY)
-        self.sequence = max((int(p.stem[3:]) for p in directory.glob('IC_*')
-                             if p.suffix.lower() in ('.png', '.jpg', '.jpeg') and p.stem[3:].isdigit()),
-                            default=0)
+        key = str(directory.resolve())
+        if key not in self._numbered:
+            # Read the folder once; afterwards numbers continue from memory and
+            # the exclusive create below still guards against other writers.
+            self.sequence = max((int(p.stem[3:]) for p in directory.glob('IC_*')
+                                 if p.suffix.lower() in ('.png', '.jpg', '.jpeg') and p.stem[3:].isdigit()),
+                                default=0)
+            self._numbered = {key}
         while True:
             self.sequence += 1
             if any((directory / f'IC_{self.sequence:06d}{ext}').exists() for ext in ('.png', '.jpeg')):
@@ -119,60 +107,6 @@ class Documentation:
                 path.unlink(missing_ok=True)
                 raise
             return path
-
-    CONFIRMED_DIR = 'confirmed'
-    CONFIRMED_CSV = 'confirmed.csv'
-    SNAPSHOT_JPEG_QUALITY = 95
-    FIELDS = ['time', 'image', 'part_number', 'confirmed_text', 'database_match',
-              'corrected', 'correction', 'ocr_text', 'automatic_pick', 'all_readings',
-              'mode', 'chip', 'scan', 'database']
-
-    def confirm(self, snapshot, fields):
-        """Save one technician-confirmed reading (background; reported via events)."""
-        row = {name: fields.get(name, '') for name in self.FIELDS if name not in ('time', 'image')}
-        return self._submit('confirm', self._confirm, snapshot.copy(), row,
-                            datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-
-    def _confirm(self, snapshot, row, when):
-        directory = self.directory / self.CONFIRMED_DIR
-        directory.mkdir(parents=True, exist_ok=True)
-        encoded = self._jpeg(snapshot, self.SNAPSHOT_JPEG_QUALITY)
-        number = max((int(p.stem[2:]) for p in directory.glob('C_*.jpg') if p.stem[2:].isdigit()),
-                     default=0)
-        while True:
-            number += 1
-            path = directory / f'C_{number:06d}.jpg'
-            try:
-                stream = path.open('xb')   # never overwrite, also across restarts
-            except FileExistsError:
-                continue
-            try:
-                with stream:
-                    stream.write(encoded)
-            except Exception:
-                path.unlink(missing_ok=True)
-                raise
-            break
-        index = directory / self.CONFIRMED_CSV
-        record = dict(row, time=when, image=path.name)
-        buffer = io.StringIO()
-        writer = csv.DictWriter(buffer, fieldnames=self.FIELDS, extrasaction='ignore')
-        try:
-            new = not index.exists() or index.stat().st_size == 0
-            if new:
-                writer.writeheader()
-            writer.writerow(record)
-            # utf-8-sig (BOM) only at the start, so Excel opens it with the right encoding.
-            with open(index, 'a', encoding='utf-8-sig' if new else 'utf-8', newline='') as handle:
-                handle.write(buffer.getvalue())
-        except Exception as exc:
-            # 0.8.8: no JPEG without its CSV row; the technician can simply retry.
-            path.unlink(missing_ok=True)
-            if isinstance(exc, PermissionError):
-                raise OSError(f'{self.CONFIRMED_CSV} is open in another program (close Excel); '
-                              'the reading was not logged') from exc
-            raise
-        return path
 
     def close(self, timeout=None):
         """Write every accepted request, then stop the writer thread.

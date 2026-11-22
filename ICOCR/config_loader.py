@@ -15,7 +15,7 @@ import re
 from config_defaults import DEFAULTS
 
 SCHEMA_VERSION = 1
-from user_paths import CONFIG_DIR, SETTINGS_FILE
+from user_paths import CONFIG_DIR
 MAX_FILE_BYTES = 1024 * 1024
 _LOG = logging.getLogger(__name__)
 

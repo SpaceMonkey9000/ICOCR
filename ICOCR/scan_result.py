@@ -1,7 +1,6 @@
 """One serializable selection decision shared by OCR, list, history and overlay."""
 from config_loader import tuning
 import re
-import numpy as np
 from component_catalog import annotate, live_candidates
 from ocr_core import candidate_id
 from marking_context import selection_order
@@ -16,20 +15,11 @@ LOT_CODE_REASON = 'Lot/date code or label pattern — listed, not auto-selected'
 def auto_selectable(row):
     """Part syntax, bounded block evidence or a trusted database match is needed.
     Unfamiliar marks remain unidentified; unsupported context stays unselected."""
+    if row.get('corrected_alias_issue'):
+        return False
     return bool(row.get('selected_database_match')) or (
         (row.get('kind') != 'context' or row.get('context_marking')) and
         (not row.get('orientation_alternative') or row.get('orientation_pattern_supported')))
-
-
-def _line_geometry(box):
-    points = np.asarray(box, dtype=float)
-    direction = points[1] - points[0]
-    length = float(np.linalg.norm(direction))
-    if length < 1:
-        return None
-    u = direction / length
-    v = np.array([-u[1], u[0]])
-    return points.mean(axis=0), u, v, float(np.ptp(points @ v)), points @ u
 
 
 def mark_block_numeric(rows):
@@ -51,10 +41,10 @@ def mark_block_numeric(rows):
     return marked
 
 
-def build_scan_result(rows, all_rows, catalog=None, previous=None):
+def build_scan_result(rows, all_rows, catalog=None, previous=None, *, package_prediction=None):
     all_rows = [dict(r) for r in all_rows]
     marked = mark_block_numeric(all_rows)
-    annotated = annotate(all_rows, catalog)
+    annotated = annotate(all_rows, catalog, package_prediction=package_prediction)
     eligible = {candidate_id(r) for r in rows} | {candidate_id(r) for r in marked}
     eligible |= {candidate_id(r) for r in all_rows if r.get('ic_numeric')}
     eligible |= {candidate_id(r) for r in annotated if r.get('context_marking')}
@@ -97,6 +87,8 @@ def build_scan_result(rows, all_rows, catalog=None, previous=None):
         elif (row.get('orientation_alternative') and not row.get('selected_database_match') and
               not row.get('orientation_pattern_supported')):
             reason = 'Alternative reading direction — no database support'
+        elif row.get('corrected_alias_issue'):
+            reason = row['corrected_alias_issue']
         elif not auto_selectable(row):
             reason = LOT_CODE_REASON
         elif not row.get('box'):
@@ -149,7 +141,7 @@ def build_scan_result(rows, all_rows, catalog=None, previous=None):
                                    ('; highest selection priority' if selected is row else
                                     '; another candidate ranks higher'))
         if row.get('ocr_correction'):
-            row['selection_reason'] += '; one-character database correction from '+row['key']
+            row['selection_reason'] += '; database OCR correction from '+row['key']
         if row.get('orientation_pattern_supported'):
             row['selection_reason'] += '; part syntax supports alternative reading direction'
         if row.get('weak_family_hint'):
