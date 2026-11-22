@@ -2,6 +2,8 @@
 
 Read chip markings straight from your microscope camera.
 
+UI & Alias prototype
+
 ICOCR is a Windows app for electronics repair and board inspection. It reads the text on a chip, checks it against a component database, and shows the available description and pinout alongside the image.
 
 It puts the marking and reference information in one place, so there’s less typing and less switching between windows while working on a board.
@@ -21,11 +23,11 @@ Connect a microscope camera or open a saved photo, select the chip, and scan. Li
 
 ## A few examples
 
-Reading a microcontroller marking and displaying a database reference:
+Reading a control IC marking and displaying a database reference:
 
 ![ICOCR reading an MC908-series microcontroller marking](images/ICOCR_01.jpg)
 
-Reading an LM2901M marking and showing an LM2901 reference:
+New history and ICDB linking functionality:
 
 ![ICOCR reading LM2901M and displaying an LM2901 pinout reference](images/ICOCR_04.jpg)
 
