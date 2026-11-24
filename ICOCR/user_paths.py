@@ -34,8 +34,33 @@ def prepare_config(data=None):
             pass
 
 
+def _pictures_folder():
+    """The user's Pictures folder, following a moved Windows Pictures location."""
+    if os.name == 'nt':
+        try:
+            import ctypes
+            import uuid
+            from ctypes import wintypes
+
+            class GUID(ctypes.Structure):
+                _fields_ = [('Data1', wintypes.DWORD), ('Data2', wintypes.WORD),
+                            ('Data3', wintypes.WORD), ('Data4', ctypes.c_ubyte * 8)]
+            raw = uuid.UUID('{33E28130-4E1E-4676-835A-98395C3BC3BB}').bytes_le  # FOLDERID_Pictures
+            folder_id = GUID.from_buffer_copy(raw)
+            path = ctypes.c_wchar_p()
+            shell32 = ctypes.windll.shell32
+            if shell32.SHGetKnownFolderPath(ctypes.byref(folder_id), 0, None, ctypes.byref(path)) == 0:
+                try:
+                    return Path(path.value)
+                finally:
+                    ctypes.windll.ole32.CoTaskMemFree(path)
+        except Exception:
+            pass
+    return Path.home() / 'Pictures'
+
+
 def default_capture_directory():
-    return ROOT.parent / 'DATA' / 'captures'
+    return _pictures_folder() / 'ICOCR'
 
 
 def capture_directory(preferences):

@@ -39,7 +39,7 @@ LIVE_INTERVAL_MS = 1600
 class MainWindow(MainLayoutMixin, CameraMixin, ScanMixin, PinoutPanelMixin, HistoryMixin, QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f'ICOCR {VERSION} — Alias Prototype')
+        self.setWindowTitle(f'ICOCR {VERSION}')
         self.resize(1380, 850)
         # Camera and displayed images.
         self.capture = None
@@ -152,9 +152,10 @@ class MainWindow(MainLayoutMixin, CameraMixin, ScanMixin, PinoutPanelMixin, Hist
             QMessageBox.warning(self, 'Invalid paths', 'All five paths must be absolute.')
             return
         candidate_data = candidate_data.resolve()
-        if candidate_data != DATA:
+        if candidate_data != DATA and not database_file(candidate_data).is_file():
             QMessageBox.warning(self, 'Missing ICDB database',
-                'The alias prototype only uses its own DATA folder.')
+                f'No ICDB database was found in {candidate_data}. Choose the shared DATA folder '
+                'that contains db\\components.sqlite.')
             return
         if not candidate_models.is_dir():
             QMessageBox.warning(self, 'Models folder missing', 'Choose an existing models folder.')
@@ -313,7 +314,11 @@ class MainWindow(MainLayoutMixin, CameraMixin, ScanMixin, PinoutPanelMixin, Hist
             from component_catalog import annotate
             def refresh(row):
                 text = row.get('raw_text') or row.get('text') or row.get('key') or ''
-                if catalog.explicit_marking_matches(text) or catalog.corrected_alias_suggestions(text):
+                # A new alias, or a part added in ICDB that this reading now names exactly.
+                newly_named = (not row.get('selected_database_match') and
+                               any(m.get('match_type') == 'exact' for m in catalog.find(text)))
+                if (newly_named or catalog.explicit_marking_matches(text)
+                        or catalog.corrected_alias_suggestions(text)):
                     row.update(annotate([row], catalog,
                                         package_prediction=row.get('package_classification'))[0])
                     if row.get('selected_database_match'):

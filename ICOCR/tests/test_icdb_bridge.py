@@ -18,7 +18,7 @@ class BridgeTests(unittest.TestCase):
             with patch('qt_icdb_bridge.os.name', 'posix'):
                 launch_icdb(root, root/'DATA', 'TPS65150', popen=lambda *a, **kw: popens.append((a,kw)))
             args, options = popens[0]
-            self.assertEqual(args[0][-4:], ['--data', str(root/'DATA'), '--open-part', 'TPS65150'])
+            self.assertEqual(args[0][-2:], [f"--data={(root/'DATA').resolve()}", '--open-part=TPS65150'])
             self.assertEqual(options['cwd'], str(root))
     def test_windows_uses_python_not_cmd(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -32,7 +32,7 @@ class BridgeTests(unittest.TestCase):
             with patch('qt_icdb_bridge.os', type('FakeOS', (), {'name': 'nt'})()):
                 launch_icdb(root, root/'DATA', 'A&B', popen=lambda *a, **kw: calls.append((a,kw)))
             self.assertEqual(calls[0][0][0][0],str(winpython))
-            self.assertEqual(calls[0][0][0][-1],'A&B')
+            self.assertEqual(calls[0][0][0][-1],'--open-part=A&B')
 
 if __name__ == '__main__':
     unittest.main()

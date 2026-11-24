@@ -61,6 +61,21 @@ summarises builds 0.9.0-qt1, 0.9.0-qt2 and the Qt revisions after them.
 - Space and Enter were swallowed by a focused button.
 - A scan result arriving after the camera or image changed was shown.
 - Tests that use the rules gave different results depending on run order.
+- ICOCR started with the alias prototype's start-up code: it forced a `DATA` folder next
+  to the application folder (ignoring `ICLENS_DATA` and the folder saved in Settings),
+  kept its settings in a `prototype-config` folder, and refused another DATA folder in
+  Settings. It now finds DATA, rules and settings as documented, and Settings can change
+  the shared DATA folder.
+- Captures were saved in `DATA\captures` instead of `Pictures\ICOCR`.
+- **Add alias** ignored the saved ICDB location.
+- A later scan replaced a reading chosen by double-click in History.
+- During live recognition, History was rebuilt after every scan, which reset its pinout
+  zoom and pan and its scroll position.
+- **Open in ICDB** and **Add to ICDB** failed for a part number starting with `-`.
+- A part added or opened in ICDB was not recognised until the database was reloaded by
+  hand; ICOCR now reloads the catalogue when that ICDB saves.
+- The first scan could use the OCR engine while it was still warming up, and a failed
+  engine was rebuilt on every live scan. Live scans now wait; a manual scan retries.
 
 ### Removed
 

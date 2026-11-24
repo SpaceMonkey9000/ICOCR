@@ -17,7 +17,7 @@ class AddBridgeTests(unittest.TestCase):
             with patch('qt_icdb_bridge.subprocess.Popen') as popen:
                 launch_icdb(folder, data, 'TPS 65150', popen=popen, action='add')
             cmd = popen.call_args.args[0]
-            self.assertEqual(cmd[-4:], ['--data', str(data), '--add-part', 'TPS 65150'])
+            self.assertEqual(cmd[-2:], [f'--data={Path(data).resolve()}', '--add-part=TPS 65150'])
     def test_rejects_old_icdb_for_add(self):
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp)

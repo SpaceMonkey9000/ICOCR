@@ -21,11 +21,11 @@ class HistoryMixin:
         self.history_reference_select.blockSignals(True)
         self.history_reference_select.clear()
         self.history_reference_select.setEnabled(False)
-        self._history_pinout_source = None
-        self.history_pinout_image.set_source(None)
         self.history_pinout_note.clear()
         self.history_pinout_title.setText('Pinout — ' + str(match.get('part') or row.get('key') or 'Unknown'))
         if not match or not self.library:
+            self._history_pinout_source = None
+            self.history_pinout_image.set_source(None)
             self.history_pinout_note.setText('No linked ICDB pinout')
             self.history_reference_select.blockSignals(False)
             return
@@ -60,18 +60,23 @@ class HistoryMixin:
         self._render_history_reference(index)
 
     def _render_history_reference(self, index):
-        """Render the chosen ICDB reference with the shared theme-aware loader."""
-        self._history_pinout_source = None
-        self.history_pinout_image.set_source(None)
+        """Render the chosen ICDB reference with the shared theme-aware loader.
+        The same diagram is not set again, so zoom and pan survive a refresh."""
         if not 0 <= index < len(self.history_reference_choices):
+            self._history_pinout_source = None
+            self.history_pinout_image.set_source(None)
             self.history_pinout_note.setText('No linked ICDB pinout')
             return
         try:
-            self._history_pinout_source = self._reference_pixmap(
-                self.history_reference_choices[index]['path'])
-            self._fit_history_pinout_pixmap()
+            pixmap = self._reference_pixmap(self.history_reference_choices[index]['path'])
         except Exception as exc:
+            self._history_pinout_source = None
+            self.history_pinout_image.set_source(None)
             self.history_pinout_note.setText('Cannot render pinout: ' + str(exc))
+            return
+        if pixmap is not self._history_pinout_source:
+            self._history_pinout_source = pixmap
+            self._fit_history_pinout_pixmap()
 
     def _fit_history_pinout_pixmap(self):
         if self._history_pinout_source is not None:
@@ -80,6 +85,7 @@ class HistoryMixin:
     # -- history ---------------------------------------------------------------
     def _refresh_history(self):
         previous = self.history_list.currentRow()
+        scroll = self.history_list.verticalScrollBar().value()
         self.history_list.blockSignals(True)
         self.history_list.clear()
         for entry in self.history_model.entries:
@@ -87,6 +93,7 @@ class HistoryMixin:
             self.history_list.addItem(f"{entry['time']}  {row.get('text') or row.get('key')} — "
                                       f"{row.get('function_summary') or 'No database match'}")
         self.history_list.blockSignals(False)
+        self.history_list.verticalScrollBar().setValue(scroll)
         self.tabs.setTabText(self.history_tab_index, f'History ({len(self.history_model.entries)})')
         if 0 <= previous < len(self.history_model.entries):
             self.history_list.setCurrentRow(previous)
@@ -156,15 +163,14 @@ class HistoryMixin:
 
     def _send_history_to_icdb(self, part, action, target=None):
         prefs = self.preferences.load()
-        folder = APP_ROOT.parent / 'ICDB' if action == 'alias' else prefs.get('icdb_installation', '')
+        folder = prefs.get('icdb_installation', '')
         try:
             folder = icdb_entry(folder) if folder else None
         except (ValueError, OSError):
             folder = None
         if folder is None:
-            candidates = [APP_ROOT.parent / 'ICDB_0.8.6_PySide6_Components_Pinouts',
-                          APP_ROOT.parent / 'ICDB',
-                          APP_ROOT]
+            # ICDB installed next to ICOCR (the usual source layout).
+            candidates = [APP_ROOT.parent / 'ICDB', APP_ROOT]
             for candidate in candidates:
                 try:
                     folder = icdb_entry(candidate)
@@ -185,8 +191,8 @@ class HistoryMixin:
         try:
             process = (launch_icdb(folder, DATA, part, action=action, target=target) if action == 'alias'
                        else launch_icdb(folder, DATA, part, action=action))
-            if action == 'alias':
-                self._watch_alias_save(process)
+            # Open and Add can save new parts too; reload the catalogue when ICDB saves.
+            self._watch_icdb_save(process)
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, 'ICDB', f'Failed to launch ICDB:\n{exc}')
             return
@@ -199,7 +205,9 @@ class HistoryMixin:
             pass
         self.statusBar().showMessage(f'{"Adding" if action == "add" else "Opening"} {part} in ICDB')
 
-    def _watch_alias_save(self, process):
+    def _watch_icdb_save(self, process):
+        """Reload the catalogue whenever the ICDB process just started saves, and once
+        more after it exits, then re-check this session's readings against it."""
         from PySide6.QtCore import QTimer
         from shared_data import database_file
         from pathlib import Path

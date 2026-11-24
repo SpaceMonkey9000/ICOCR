@@ -33,23 +33,22 @@ def launch_icdb(folder, data, part, popen=subprocess.Popen, action='open', targe
         raise ValueError('Unsupported ICDB action')
     option = {'open': '--open-part', 'add': '--add-part', 'alias': '--add-alias'}[action]
     if action == 'alias' and "'--add-alias'" not in (folder / 'icdb_qt.py').read_text(encoding='utf-8'):
-        raise ValueError('Select the ICDB Alias Prototype folder.')
+        raise ValueError('This ICDB version does not support Add alias. Install the updated ICDB build.')
     if os.name == 'nt':
         # Invoke ICDB's own Python directly. Avoid cmd.exe parsing OCR-provided text.
         python = folder / '.venv-qt' / 'Scripts' / 'python.exe'
         if not python.is_file():
             raise FileNotFoundError(f'ICDB environment missing: {python}. Run setup_qt_windows.bat in ICDB first.')
-        argv = [str(python), str(folder / 'icdb_qt.py'),
-                '--data', str(data), option, str(part).strip()]
         flags = getattr(subprocess, 'CREATE_NEW_CONSOLE', 0)
     else:
         env_python = folder / '.venv-qt' / 'bin' / 'python'
-        argv = [str(env_python if env_python.is_file() else sys.executable),
-                str(folder / 'icdb_qt.py'), '--data', str(data), option, str(part).strip()]
+        python = env_python if env_python.is_file() else Path(sys.executable)
         flags = 0
+    # Equals form: a value starting with '-' (an OCR marking, a typed part number or
+    # a DATA path) must never be parsed by ICDB as another option.
+    argv = [str(python), str(folder / 'icdb_qt.py'), f'--data={data}',
+            f'{option}={str(part).strip()}']
     if action == 'alias':
-        # Equals form prevents an observed marking from being parsed as an option.
-        argv[-2:] = [f'{option}={str(part).strip()}']
         if target:
             argv += ['--alias-part=' + str(target.get('part') or ''),
                      '--alias-manufacturer=' + str(target.get('manufacturer') or '')]

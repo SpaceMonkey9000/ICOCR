@@ -3,17 +3,14 @@
 Prepares configuration, logging and the shared DATA lease before any
 recognition module is imported, and keeps start-up failures visible.
 """
-import os
-from pathlib import Path
 import sys
 import traceback
 
 
 def main():
-    root = Path(__file__).resolve().parent.parent
-    os.environ['ICLENS_DATA'] = str(root / 'DATA')
-    os.environ['ICOCR_RULES_DIR'] = str(root / 'DATA' / 'rules')
-    os.environ['ICOCR_CONFIG_DIR'] = str(root / 'prototype-config')
+    # The DATA folder, rules folder and settings folder are resolved by
+    # project_paths / rule_modules / user_paths (ICLENS_DATA, ICOCR_RULES_DIR and
+    # ICOCR_CONFIG_DIR override them); nothing is forced here.
     from PySide6.QtWidgets import QApplication, QMessageBox
     app = QApplication(sys.argv)  # noqa: F841  (must stay alive until exit)
     lease = None

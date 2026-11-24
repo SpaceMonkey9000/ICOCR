@@ -13,21 +13,44 @@ from shared_data import database_file
 
 
 _ENGINE = None
+_ENGINE_ERROR = None
 _ENGINE_LOCK = threading.Lock()
+# Held while the engine runs. Scans are serialised by the window, but the
+# background warm-up could otherwise use the same engine as the first scan.
+ENGINE_IN_USE = threading.Lock()
 
 
 def shared_ocr():
     """One OCR engine for the whole session.
 
     Creating an engine loads three ONNX models (and, on CUDA, runs the cuDNN
-    algorithm search), so it must not be repeated for every scan. Scans are
-    serialised by the window, so a single instance is safe.
+    algorithm search), so it must not be repeated for every scan. After a
+    failure the error is raised again without reloading the models, until
+    retry_engine() is called (a manual scan does that).
     """
-    global _ENGINE
+    global _ENGINE, _ENGINE_ERROR
     with _ENGINE_LOCK:
         if _ENGINE is None:
-            _ENGINE = OCR()
+            if _ENGINE_ERROR is not None:
+                raise RuntimeError(f'OCR engine unavailable: {_ENGINE_ERROR}')
+            try:
+                _ENGINE = OCR()
+            except Exception as exc:
+                _ENGINE_ERROR = f'{type(exc).__name__}: {exc}'
+                raise
         return _ENGINE
+
+
+def engine_failed():
+    """True when creating the OCR engine failed and was not retried since."""
+    return _ENGINE is None and _ENGINE_ERROR is not None
+
+
+def retry_engine():
+    """Allow the next shared_ocr() call to try creating the engine again."""
+    global _ENGINE_ERROR
+    with _ENGINE_LOCK:
+        _ENGINE_ERROR = None
 
 
 class DatabaseLoader(QThread):
@@ -55,7 +78,8 @@ class EngineLoader(QThread):
             engine = shared_ocr()
             try:
                 # Pay ONNX Runtime's lazy initialisation now, not on the first scan.
-                engine.warm_up()
+                with ENGINE_IN_USE:
+                    engine.warm_up()
             except Exception:
                 logging.exception('OCR warm-up failed')
             self.loaded.emit(engine.runtime.get('label', ''))
@@ -81,7 +105,9 @@ class FullScanWorker(QThread):
 
     def run(self):
         try:
-            self._scan()
+            with ENGINE_IN_USE:
+                if not self.cancel_event.is_set():
+                    self._scan()
         finally:
             self.frame = self.catalog = None   # do not keep the frame alive with the thread object
 

@@ -8,7 +8,7 @@ import numpy as np
 from PySide6.QtCore import QTimer
 from package_pinouts import corrected_alias_label
 from readings_list import build as build_readings, label as reading_label
-from ui.workers import FullScanWorker
+from ui.workers import FullScanWorker, engine_failed, retry_engine
 
 
 class ScanMixin:
@@ -62,6 +62,10 @@ class ScanMixin:
                     self.ocr_worker.cancel()
                 self.statusBar().showMessage('Scan queued')
             return
+        if engine_failed():
+            if live:
+                return  # do not reload the OCR models every live tick; a manual scan retries
+            retry_engine()
         image = self._displayed()
         if image is None:
             self.statusBar().showMessage('No frame to scan')
@@ -191,8 +195,9 @@ class ScanMixin:
         self._populate_readings()
         if decision:
             # Same policy as the session history: accepted candidates only.
-            self.history_model.add(decision.get('candidates') or [], self.catalog is not None)
-            self._refresh_history()
+            # Rebuilding History on every live scan reset its list and pinout view.
+            if self.history_model.add(decision.get('candidates') or [], self.catalog is not None):
+                self._refresh_history()
         self.diagnostic_text.setPlainText(json.dumps(
             self._diagnostic_summary(decision, diagnostics), indent=2, default=str))
         package = diagnostics.get('package_classification')

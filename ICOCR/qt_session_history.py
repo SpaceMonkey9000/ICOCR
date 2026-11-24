@@ -21,6 +21,8 @@ class ReadingHistory:
                 continue
             if key in self.indices:
                 entry = self.entries[self.indices[key]]
+                if entry.get('manually_selected'):
+                    continue  # the technician's choice is never replaced by a scan
                 if match_quality(row) > match_quality(entry['row']):
                     entry.update(row=deepcopy(row), database_loaded=database_loaded)
                     changed = True
