@@ -116,6 +116,19 @@ def bounded_part_match(left, right):
                                   min(MAX_AFFIX_CHARS, extra) + 1))
 
 
+def _slash_key(text):
+    """Compare full-length markings where OCR omitted printed '/' separators.
+
+    Deliberately does not remove hyphens or any other punctuation. Short codes
+    are excluded so this cannot broaden package top-mark recognition.
+    """
+    value = text.strip().upper()
+    if not re.fullmatch(r'[A-Z0-9/]+', value):
+        return ''
+    collapsed = value.replace('/', '')
+    return collapsed if len(collapsed) >= 6 and re.search(r'[A-Z]', collapsed) and re.search(r'[0-9]', collapsed) else ''
+
+
 _INDEX_CACHE_VERSION = 3   # 2: JSON format (0.8.8); bump when the indexing rules or the catalogue query change
 
 
@@ -161,6 +174,23 @@ class Catalog:
                             self.exact_aliases.setdefault(marking, []).append(dict(
                                 record, match_type='verified_alias', identity_evidence='ICDB marking alias',
                                 alias_packages=json.loads(packages), applied_rule=trace))
+        # Separate from normal affix/fuzzy indexes: only slash-bearing full
+        # part numbers and verified aliases are eligible. A collision among
+        # different devices must never be resolved automatically.
+        self._slash_index = {}
+        for name, records in self.records.items():
+            if '/' in name and (key := _slash_key(name)):
+                self._slash_index.setdefault(key, []).extend(
+                    dict(record, match_type='exact', identity_evidence='slash-insensitive part number',
+                         applied_rule=dict(rule_id='match.omitted_slash', observed=key,
+                                           resolved_base=name, label='omitted slash'))
+                    for record in records)
+        for marking, records in self.exact_aliases.items():
+            if '/' in marking and (key := _slash_key(marking)):
+                self._slash_index.setdefault(key, []).extend(
+                    dict(record, applied_rule=dict(rule_id='match.omitted_slash', observed=key,
+                                                   resolved_base=record['part'], label='omitted slash'))
+                    for record in records)
         from confusion_matching import fold_index
         self.alias_fold_index = fold_index(self.exact_aliases)
         self.count=len(self.records)
@@ -251,6 +281,18 @@ class Catalog:
         self._partial_cache = OrderedDict()
         self._cache_lock = RLock()
 
+    def _omitted_slash_matches(self, text):
+        key = _slash_key(text)
+        if not key:
+            return []
+        # Exact spelling is handled by the ordinary catalogue / alias lookup.
+        candidates = getattr(self, '_slash_index', {}).get(key, ())
+        identities = {(r['part'].strip().upper(), (r.get('manufacturer') or '').casefold())
+                      for r in candidates}
+        if len(identities) != 1:
+            return []
+        return list(candidates)
+
     def find(self,text,numeric_prefix=False):
         # Bounded prefix/suffix matching; ignore case and edge whitespace only.
         # Prefer exact names so a known variant keeps its specific description.
@@ -259,6 +301,9 @@ class Catalog:
         exact=self.records.get(key)
         if exact:
             return [dict(record,match_type='exact') for record in exact]
+        slash_matches = self._omitted_slash_matches(key)
+        if slash_matches:
+            return slash_matches
         if numeric_prefix and rule_enabled('match.numeric_family') and re.fullmatch(r'[0-9]{4,}', key):
             return self.numeric_family(key)
         if automatic_exclusion(key) or key.isdigit() or not rule_enabled('match.affixes'):return []  # Numeric aliases must be exact.
@@ -295,7 +340,8 @@ class Catalog:
         key = text.strip().upper()
         aliases = getattr(self, 'exact_aliases', {}).get(key, ())
         if not aliases:
-            return []
+            return [m for m in self._omitted_slash_matches(key)
+                    if m.get('match_type') == 'verified_alias']
         targets = {(r['part'].upper(), r.get('manufacturer') or '') for r in aliases}
         return [*aliases, *(dict(r, match_type='exact') for r in self.records.get(key, ())
                             if (r['part'].upper(), r.get('manufacturer') or '') not in targets)]
