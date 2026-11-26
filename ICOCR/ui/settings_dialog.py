@@ -134,6 +134,10 @@ class SettingsDialog(QDialog):
         self.show_overlay = QCheckBox('Display recognition outlines and labels on preview')
         self.show_overlay.setChecked(window.overlay_enabled)
         rec.addWidget(self.show_overlay)
+        self.diagnostics = QCheckBox('Enable scan diagnostics')
+        self.diagnostics.setChecked(window.diagnostics_enabled)
+        self.diagnostics.setToolTip('Record detailed recognition evidence for subsequent scans. Disable for normal operation.')
+        rec.addWidget(self.diagnostics)
         rec.addStretch(1)
         self.tabs.addTab(recognition, 'Recognition')
 

@@ -1,5 +1,6 @@
 """One serializable selection decision shared by OCR, list, history and overlay."""
 from config_loader import tuning
+from recognition_diagnostics import event, candidate, active
 import re
 from component_catalog import annotate, live_candidates
 from ocr_core import candidate_id
@@ -152,6 +153,8 @@ def build_scan_result(rows, all_rows, catalog=None, previous=None, *, package_pr
             row['selection_reason'] += f"; line score {row['line_score']:.2f} ({row['line_reason']})"
     if incumbent_retained:
         selected['selection_reason'] += '; prior eligible selection retained; no stronger replacement evidence'
+    if active():
+        event("selection", selected=selected["key"] if selected else None, candidates=[candidate(r) for r in annotated])
     return dict(configuration=configuration_diagnostics(), incumbent_retained=incumbent_retained, line_ranking=ranking,
                 all_candidates=annotated, display_candidates=display,
                 candidates=candidates, selected=candidates[0] if candidates else None,

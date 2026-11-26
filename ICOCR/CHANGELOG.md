@@ -11,6 +11,9 @@ summarises builds 0.9.0-qt1, 0.9.0-qt2 and the Qt revisions after them.
 
 ### Added
 
+- Optional detailed scan diagnostics (Settings > Recognition), disabled by default.
+- Diagnostic reports are formatted only while the Diagnostics tab is visible; repeated updates are coalesced.
+
 - Qt main window with Identify, History and Diagnostics tabs, and a tabbed Settings
   dialog.
 - New preview pipeline: resizing, focus peaking and overlay tracking run in a worker

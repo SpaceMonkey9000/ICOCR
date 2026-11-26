@@ -1,5 +1,6 @@
 """Optional body crop around the unchanged OCR engine, with explicit coordinates."""
 from config_loader import tuning
+from recognition_diagnostics import event
 from copy import deepcopy
 import os
 import time
@@ -95,6 +96,7 @@ def read_with_body(engine, crop, *, enabled=False, detection=None, package_optio
     detection = plausible_body(crop, detection)
     package_detection = dict(detection)
     work,offset = body_crop(crop,detection) if detection['status']=='detected' else (crop,[0,0])
+    event("body_crop", detection=detection, offset=offset, shape=work.shape)
     # 0.8.3.4: a failed body-crop pass is followed by a full-selection recovery
     # with its own retry, so the crop pass defers its no-selection retry.
     engine.defer_retry = (detection['status'] == 'detected' and
@@ -146,6 +148,7 @@ def read_with_body(engine, crop, *, enabled=False, detection=None, package_optio
     # Do not recurse: recovery must never reapply the same failing body mask.
     if (allow_recovery and getattr(engine, 'acquisition_only', False) is not True and detection['status'] == 'applied' and
             not diagnostics.get('scan_result', {}).get('selected')):
+        event("body_recovery_started")
         cropped_diagnostics = diagnostics
         full_rows, _ = _recovery_read(engine, crop, read_started, ocr_options)
         # 0.8.4.3: no deep copy. Nothing below changes these rows or any nested
@@ -187,6 +190,7 @@ def read_with_body(engine, crop, *, enabled=False, detection=None, package_optio
     from package_classifier import classify_scan
     package = classify_scan(crop if package_image is None else package_image,
                             package_detection, package_options, package_frame, package_roi)
+    event('package_classification', result=package)
     diagnostics['package_classification'] = package
     decision = diagnostics.get('scan_result')
     if decision is not None:

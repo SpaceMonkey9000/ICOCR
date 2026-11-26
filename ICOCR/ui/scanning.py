@@ -80,7 +80,6 @@ class ScanMixin:
             # Keep the full set of detected bodies selectable while the chosen
             # component is rescanned. Results are replaced atomically on completion.
             self.scan_btn.setEnabled(False)
-            self.details.setPlainText('Scanning…')
             self._idle_last_change = time.monotonic()
             self._ocr_sleeping = False
         self._pending = dict(epoch=self._epoch, frame=image, roi=roi, live=live)
@@ -91,7 +90,7 @@ class ScanMixin:
                         targeted=self.targeted_enabled, package=self.package_enabled,
                         package_model=str(self.effective_package_model()), body_model=self.body_model,
                         multi=self.multi_enabled,
-                        body_only=self.body_only_enabled)
+                        body_only=self.body_only_enabled, diagnostics=self.diagnostics_enabled)
         self.ocr_worker = FullScanWorker(self._epoch, image, roi, self.catalog, settings, self)
         self.ocr_worker.scanned.connect(self.scan_done)
         self.ocr_worker.finished.connect(self._scan_worker_finished)
@@ -152,14 +151,18 @@ class ScanMixin:
         pending, self._pending = self._pending, None
         if self._closing or pending is None or pending['epoch'] != epoch:
             return      # the camera or image changed while this scan was running
+        self._diagnostic_error = None
         if error:
             if self.preview is not None:
                 self.preview.keep(self._tracked_epochs())
-            self.details.setPlainText(error)
-            self.details_title.setChecked(True)
-            self.statusBar().showMessage('Scan failed — see Diagnostics > Identification details')
+            if self.diagnostics_enabled:
+                self._diagnostic_error = dict(error=error, execution_trace=diagnostics.get("execution_trace", []))
+                self._refresh_diagnostic_report()
+            self.statusBar().showMessage('Scan failed — see Diagnostics' if self.diagnostics_enabled else 'Scan failed — enable diagnostics for details')
             return
         self.decision, self.diagnostics = decision, diagnostics
+        if not self.diagnostics_enabled:
+            self._discard_diagnostic_trace()
         self.manual_chosen_row = None  # A new scan replaces the previous manual choice.
         # OCR boxes are relative to the scanned selection; the overlay places
         # them in the scanned frame using the region recorded for that scan.
@@ -198,8 +201,6 @@ class ScanMixin:
             # Rebuilding History on every live scan reset its list and pinout view.
             if self.history_model.add(decision.get('candidates') or [], self.catalog is not None):
                 self._refresh_history()
-        self.diagnostic_text.setPlainText(json.dumps(
-            self._diagnostic_summary(decision, diagnostics), indent=2, default=str))
         package = diagnostics.get('package_classification')
         try:
             from package_classifier import summary
@@ -212,6 +213,7 @@ class ScanMixin:
             self.results.setCurrentRow(keys.index(previous_key))   # keep the technician's row
         elif best and best.get('key') in keys:
             self.results.setCurrentRow(keys.index(best.get('key')))
+        self._refresh_diagnostic_report()
         if diagnostics.get('detector_only') and not diagnostics.get('body_model_detections'):
             self.statusBar().showMessage('Body-only OCR: no detected IC bodies; OCR skipped'
                                          + (f" ({diagnostics['body_model_error']})" if diagnostics.get('body_model_error') else ''))
@@ -233,18 +235,56 @@ class ScanMixin:
         self._finish_close_if_ready()
 
     def _diagnostic_summary(self, decision, diagnostics):
-        # Full OCR structures are large and not JSON-serialisable; show the
-        # selection evidence only.
-        selected = (decision or {}).get('selected') or {}
-        return dict(selected=selected.get('key'),
-                    selected_part=(selected.get('selected_database_match') or {}).get('part'),
-                    selection_reason=selected.get('selection_reason'),
-                    candidates=[dict(key=r.get('key'), score=r.get('score'),
-                                     reason=r.get('selection_reason'),
-                                     exclusion=r.get('rejection_reason'))
-                                for r in (decision or {}).get('all_candidates', [])],
-                    package=diagnostics.get('package_classification'),
-                    configuration=(decision or {}).get('configuration'))
+        from recognition_diagnostics import report
+        return report(decision, diagnostics, self.catalog)
+
+    def _discard_diagnostic_trace(self):
+        for key in ('execution_trace', 'chip_diagnostics', 'scan_settings'):
+            self.diagnostics.pop(key, None)
+
+    def _set_diagnostics_enabled(self, enabled):
+        if self.diagnostics_enabled == enabled:
+            return
+        self.diagnostics_enabled = enabled
+        self._diagnostic_error = None
+        self._discard_diagnostic_trace()
+        self._diagnostic_dirty = True
+        self.diagnostic_text.setPlainText(
+            'Scan diagnostics disabled. Enable in Settings > Recognition.' if not enabled
+            else 'Diagnostics enabled. Run a new scan to collect a report.')
+
+    def _diagnostic_tab_changed(self, index):
+        if index == self.diagnostic_tab_index:
+            self._queue_diagnostic_render()
+
+    def _refresh_diagnostic_report(self):
+        if self.diagnostics_enabled:
+            self._diagnostic_dirty = True
+            self._queue_diagnostic_render()
+
+    def _queue_diagnostic_render(self):
+        if (self.diagnostics_enabled and self._diagnostic_dirty
+                and not self._diagnostic_scheduled
+                and self.tabs.currentIndex() == self.diagnostic_tab_index):
+            self._diagnostic_scheduled = True
+            QTimer.singleShot(0, self._render_diagnostic_report)
+
+    def _render_diagnostic_report(self):
+        self._diagnostic_scheduled = False
+        if (not self.diagnostics_enabled or not self._diagnostic_dirty
+                or self.tabs.currentIndex() != self.diagnostic_tab_index or self._closing):
+            return
+        self._diagnostic_dirty = False
+        if self._diagnostic_error is not None:
+            report = self._diagnostic_error
+        elif 'execution_trace' in self.diagnostics:
+            report = self._diagnostic_summary(self.decision, self.diagnostics)
+            report['displayed_identification'] = self.diagnostics.get('displayed_identification')
+            report['pinout'] = self.diagnostics.get('pinout_diagnostic')
+        else:
+            self.diagnostic_text.setPlainText('Diagnostics enabled. Run a new scan to collect a report.')
+            return
+        self.diagnostic_text.setPlainText(json.dumps(report, indent=2, default=str))
 
     # -- readings --------------------------------------------------------------
     def _selected_key(self):
@@ -264,7 +304,8 @@ class ScanMixin:
         self.results.blockSignals(False)
         self.datasheet_btn.setEnabled(False)
         if not self.display_rows:
-            self.details.setPlainText('No eligible readings. Inspect recognition diagnostics or adjust selection.')
+            self.diagnostics['displayed_identification'] = 'No eligible readings'
+            self.diagnostics['pinout_diagnostic'] = {'status': 'No eligible readings'}
             self.pinout_title.setText('No component identified')
             self.reference_choices = []
             self.reference_select.blockSignals(True)
@@ -278,28 +319,30 @@ class ScanMixin:
             return
         row = self.display_rows[i]
         match = row.get('selected_database_match') or {}
-        alias_details = []
-        if row.get('corrected_alias_issue'):
-            alias_details = [row['corrected_alias_issue']]
-            alias_details += [f"{row.get('text') or row['key']} → {corrected_alias_label(candidate)}"
-                              for candidate in row['corrected_alias_suggestions']]
-        elif match.get('match_type') == 'corrected_alias':
-            alias_details = [f"{row.get('text') or row['key']} → {corrected_alias_label(match)}"]
-        self.details.setPlainText('\n'.join([
-            'Marking: ' + str(row.get('key', '')),
-            'OCR confidence: ' + str(row.get('score', '')),
-            'ICDB part: ' + str(match.get('part', 'No confirmed DB match')),
-            'Manufacturer: ' + str(match.get('manufacturer', '')),
-            'Package: ' + str(match.get('package', '')),
-            'Evidence: ' + str(row.get('status', '')),
-            'Exclusion: ' + str(row.get('rejection_reason', '')),
-            *(['Ambiguous marking alias. Double-click this reading to choose a device.']
-              + [f"{part} · {maker or 'Manufacturer unspecified'}" for part, maker in
-                 dict.fromkeys((m['part'], m.get('manufacturer')) for m in row['database_matches'])]
-              if row.get('alias_ambiguous') else []),
-            *alias_details,
-        ]))
+        if self.diagnostics_enabled:
+            alias_details = []
+            if row.get('corrected_alias_issue'):
+                alias_details = [row['corrected_alias_issue']]
+                alias_details += [f"{row.get('text') or row['key']} → {corrected_alias_label(candidate)}"
+                                  for candidate in row['corrected_alias_suggestions']]
+            elif match.get('match_type') == 'corrected_alias':
+                alias_details = [f"{row.get('text') or row['key']} → {corrected_alias_label(match)}"]
+            self.diagnostics['displayed_identification'] = '\n'.join([
+                'Marking: ' + str(row.get('key', '')),
+                'OCR confidence: ' + str(row.get('score', '')),
+                'ICDB part: ' + str(match.get('part', 'No confirmed DB match')),
+                'Manufacturer: ' + str(match.get('manufacturer', '')),
+                'Package: ' + str(match.get('package', '')),
+                'Evidence: ' + str(row.get('status', '')),
+                'Exclusion: ' + str(row.get('rejection_reason', '')),
+                *(['Ambiguous marking alias. Double-click this reading to choose a device.']
+                  + [f"{part} · {maker or 'Manufacturer unspecified'}" for part, maker in
+                     dict.fromkeys((m['part'], m.get('manufacturer')) for m in row['database_matches'])]
+                  if row.get('alias_ambiguous') else []),
+                *alias_details,
+            ])
         self._pinout_for(row)
+        self._refresh_diagnostic_report()
         self._update_datasheet(row)
 
     def _choose_reading(self, item):

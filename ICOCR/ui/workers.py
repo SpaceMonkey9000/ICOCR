@@ -1,5 +1,6 @@
 """Background threads: database and OCR engine loading, and the scan worker."""
 import logging
+from recognition_diagnostics import begin, end, event
 import threading
 import traceback
 from PySide6.QtCore import QThread, Signal
@@ -107,12 +108,21 @@ class FullScanWorker(QThread):
         try:
             with ENGINE_IN_USE:
                 if not self.cancel_event.is_set():
-                    self._scan()
+                    self._trace = []
+                    if self.options.get("diagnostics", False):
+                        token, self._trace = begin()
+                        try:
+                            self._scan()
+                        finally:
+                            end(token)
+                    else:
+                        self._scan()
         finally:
             self.frame = self.catalog = None   # do not keep the frame alive with the thread object
 
     def _scan(self):
         try:
+            event("scan_started", roi=self.roi, frame_shape=self.frame.shape)
             ocr = shared_ocr()
             ocr.fast = self.options['fast']
             ocr.targeted_original = self.options['targeted']
@@ -132,6 +142,7 @@ class FullScanWorker(QThread):
                         cancelled=self.cancel_event.is_set)
                 except Exception as exc:
                     model_error = f'{type(exc).__name__}: {exc}'
+            event("component_detection", detections=len(model_detections), error=model_error, outlines=[d["polygon"] for d in model_detections])
             package_options = dict(enabled=self.options['package'],
                                    model=self.options['package_model'], confidence=.5)
             if self.options.get('multi'):
@@ -155,6 +166,8 @@ class FullScanWorker(QThread):
                     detector_only=bool(self.options.get('body_only')),
                     chips=[dict(index=c['index'], status=c['status'], region=c['region'],
                                 error=c.get('error')) for c in chips])
+                if self.options.get("diagnostics", False):
+                    diagnostics["chip_diagnostics"] = [dict(index=c["index"], status=c["status"], region=c["region"], error=c.get("error"), diagnostics=c["diagnostics"]) for c in chips]
                 decision = build_scan_result(rows, rows, self.catalog)
                 elapsed = summary['total_ms'] / 1000.0
             else:
@@ -183,9 +196,13 @@ class FullScanWorker(QThread):
                 decision = diagnostics.get('scan_result') or build_scan_result(
                     rows, diagnostics.get('all_candidates', rows), self.catalog)
             if not self.cancel_event.is_set():
+                event("scan_finished", selected=(decision.get("selected") or {}).get("key"))
+                if self.options.get("diagnostics", False):
+                    diagnostics["execution_trace"] = self._trace
+                    diagnostics["scan_settings"] = dict(self.options)
                 self.scanned.emit(self.epoch, decision, diagnostics, float(elapsed), '')
         except ScanCancelled:
             return
         except Exception:
             if not self.cancel_event.is_set():
-                self.scanned.emit(self.epoch, None, {}, 0.0, traceback.format_exc())
+                self.scanned.emit(self.epoch, None, {"execution_trace": self._trace}, 0.0, traceback.format_exc())

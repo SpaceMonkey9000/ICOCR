@@ -1,6 +1,7 @@
 """Local OCR; no image uploads. Model weights are bundled by the pinned package."""
 from config_loader import tuning, rule_enabled
 import os
+from recognition_diagnostics import event, active
 import re
 import time
 import cv2
@@ -58,6 +59,8 @@ def split_candidates(observations, known=(), modes=1, copy=True):
     import copy as copying
     every, _ = select_candidates(observations, known, modes=modes, show_all=True)
     rows = [r for r in every if r['retention_eligible']]
+    if active():
+        event("candidate_retention", candidates=[dict(key=r["key"], score=r["score"], retained=r["retention_eligible"], status=r.get("status")) for r in every])
     if copy:
         rows = copying.deepcopy(rows)
     return rows, (rows[0]['rotation'] if rows else 0), every
@@ -327,7 +330,9 @@ def line_tokens(text, score, rotation, mode, box):
     rows = []
     for token in re.findall(r'\b(?:MADE\s+IN|ASSEMBLED\s+IN|PRODUCT\s+OF)\b|[A-Za-z0-9][A-Za-z0-9/.-]*', text.upper()):
         key = normalize(token)
-        if len(key) >= 3 or (len(key) == 2 and key in _PREFIXES and key.isalpha()):
+        accepted = len(key) >= 3 or (len(key) == 2 and key in _PREFIXES and key.isalpha())
+        event("token_normalisation", raw=text, token=token, key=key, accepted=accepted, reason=None if accepted else "token too short")
+        if accepted:
             rows.append(dict(text=token, key=key, score=float(score), rotation=rotation,
                              mode=mode, box=box, origin_metadata=bool(origin_exclusion(token))))
     return rows
@@ -383,6 +388,7 @@ class OCR:
         crop-stage preset) is resized directly: resize(copy(x)) == resize(x).
         Other treatments run at source resolution as before (CLAHE tiles and
         blur radii are resolution dependent, so they are not reordered)."""
+        event("preprocessing", treatment=treatment, scale=scale, input_shape=crop.shape)
         config = getattr(self, '_active_preprocessing', None)
         identity = (config['stage'] == 'crop') if config is not None else treatment == 'Original'
         if (identity and crop.dtype == np.uint8 and crop.ndim == 3 and crop.shape[2] == 3
@@ -580,6 +586,7 @@ class OCR:
             if needs_retry and getattr(self, 'defer_retry', False) and not decision['selected']:
                 needs_retry = False
                 self.last_diagnostics['retry_deferred'] = True
+            event("retry_decision", strong_reading=strong, targeted=targeted, unresolved=unresolved, needs_retry=needs_retry, deferred=bool(self.last_diagnostics.get("retry_deferred")), exact_stop_threshold=tuning("ocr_core.exact_retry_stop_score"), other_stop_threshold=tuning("ocr_core.other_retry_stop_score"))
             if needs_retry and self.extra_budget_expired():
                 self._budget_limited = True
             if needs_retry and not self.extra_budget_expired():
@@ -676,6 +683,7 @@ class OCR:
         self.last_diagnostics['live_budget_limited'] = self._budget_limited
         result = (final['display_candidates'], result[1])
         self.last_diagnostics['runtime']=self.runtime
+        event("ocr_finished", early_exit=bool(self.last_diagnostics.get("early_exit")), retry_calls=self.last_diagnostics.get("retry_calls"), budget_limited=self._budget_limited, note=self.last_diagnostics.get("note"))
         return result[0], time.monotonic()-started
 
     def check_cancelled(self):
@@ -703,6 +711,7 @@ class OCR:
         ``origin`` holds the detector quadrilaterals in ``image`` coordinates.
         """
         if cache is not None and k in cache:
+            event("text_detection_reused", rotation=k*90)
             return cache[k], 0., True
         engine = self.engine
         det_start = time.perf_counter()
@@ -712,6 +721,7 @@ class OCR:
         boxes, _ = engine.auto_text_det(prepared)
         crops = engine.get_crop_img_list(prepared, boxes) if boxes else []
         origin = engine._get_origin_points(boxes, record, image.shape[0], image.shape[1]) if boxes else []
+        event("text_detection", rotation=k*90, regions=origin, count=len(crops), coordinate_space="rotated OCR input")
         entry = (prepared, record, boxes, crops, origin)
         if cache is not None:
             cache[k] = entry
@@ -773,8 +783,10 @@ class OCR:
             # for catalogue selection instead of losing a valid lower score.
             for reverse, reading in ((False, upright), (True, flipped)):
                 if reading is None:
+                    event("ocr_direction_skipped", crop_id=i, detection_turn=k*90, reverse=reverse)
                     continue
                 text, score = reading[:2]
+                event("raw_ocr", crop_id=i, detection_turn=k*90, reverse=reverse, text=text, score=float(score), threshold=threshold, retained=bool(text and float(score)>=threshold))
                 if not text or float(score) < threshold:
                     continue
                 row = dict(crop_id=i, text=text, score=float(score),
@@ -953,6 +965,8 @@ class OCR:
                 break
             call_start = time.perf_counter()
             probe_rows,_ = self.engine(np.ascontiguousarray(np.rot90(probe,turns)))
+            if active():
+                event("combined_ocr_pass", rotation=turns*90, treatment=treatment, readings=[dict(box=b,text=t,score=float(v)) for b,t,v in (probe_rows or [])], note="Combined engine returns filtered readings only")
             if hasattr(self, '_timings'):
                 self._timings['ocr_passes'].append(dict(rotation=turns*90, treatment=treatment,
                     deskew=False, milliseconds=(time.perf_counter()-call_start)*1000))
@@ -1014,6 +1028,8 @@ class OCR:
                 else:
                     call_start = time.perf_counter()
                     rows,_ = self.engine(np.ascontiguousarray(np.rot90(im,turns)))
+                    if active():
+                        event("combined_ocr_pass", rotation=turns*90, treatment=mode, deskew=True, readings=[dict(box=b,text=t,score=float(v)) for b,t,v in (rows or [])])
                     if hasattr(self, '_timings'):
                         self._timings['ocr_passes'].append(dict(rotation=turns*90, treatment=mode,
                             deskew=True, milliseconds=(time.perf_counter()-call_start)*1000))

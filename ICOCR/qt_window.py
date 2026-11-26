@@ -61,6 +61,10 @@ class MainWindow(MainLayoutMixin, CameraMixin, ScanMixin, PinoutPanelMixin, Hist
         self.library = None
         self.decision = None
         self.diagnostics = {}
+        self.diagnostics_enabled = None
+        self._diagnostic_dirty = True
+        self._diagnostic_error = None
+        self._diagnostic_scheduled = False
         self.display_rows = []
         self.manual_chosen_row = None
         self.reference_choices = []
@@ -197,6 +201,7 @@ class MainWindow(MainLayoutMixin, CameraMixin, ScanMixin, PinoutPanelMixin, Hist
         self.peak_opacity = settings.opacity.currentText()
         self.body_enabled = settings.auto_body.isChecked()
         self.body_only_enabled = settings.body_only.isChecked()
+        self._set_diagnostics_enabled(settings.diagnostics.isChecked())
         self.fast_enabled = settings.fast.isChecked()
         self.targeted_enabled = settings.targeted.isChecked()
         self.package_enabled = settings.package.isChecked()
@@ -224,6 +229,7 @@ class MainWindow(MainLayoutMixin, CameraMixin, ScanMixin, PinoutPanelMixin, Hist
         self.theme = normalized_theme(settings.get('theme', 'dark'))
         self.invert_svg_pinouts = bool(settings.get('invert_svg_pinouts', True))
         self.body_only_enabled = bool(settings.get('body_only_enabled', False))
+        self._set_diagnostics_enabled(bool(settings.get('diagnostics_enabled', False)))
         self.overlay_enabled = bool(settings.get('overlay_enabled', True))
         self.sleep_enabled = bool(settings.get('sleep_enabled', True))
         try:
@@ -260,7 +266,7 @@ class MainWindow(MainLayoutMixin, CameraMixin, ScanMixin, PinoutPanelMixin, Hist
         values = {key: getattr(self, key) for key in (
             'peak_colour', 'peak_sensitivity', 'peak_opacity', 'body_enabled',
             'fast_enabled', 'targeted_enabled', 'package_enabled', 'package_model', 'body_model',
-            'body_only_enabled')}
+            'body_only_enabled', 'diagnostics_enabled')}
         values.update(theme=self.theme, invert_svg_pinouts=self.invert_svg_pinouts, camera_mode=self.modes.currentText(),
                       camera_backend=self.backend.currentText(),
                       peaking_enabled=self.peaking_btn.isChecked(),

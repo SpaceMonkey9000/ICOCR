@@ -174,6 +174,20 @@ class Catalog:
                             self.exact_aliases.setdefault(marking, []).append(dict(
                                 record, match_type='verified_alias', identity_evidence='ICDB marking alias',
                                 alias_packages=json.loads(packages), applied_rule=trace))
+            # Read metadata alongside the loaded catalogue, not at scan time.
+            self.diagnostic_metadata = dict(path=str(self.path), part_numbers=len(self.records),
+                                            alias_markings=len(self.exact_aliases))
+            try:
+                tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                for table, name in [('components','devices'), ('component_marking_aliases','alias_records'), ('pl_definitions','pinouts')]:
+                    if table in tables:
+                        self.diagnostic_metadata[name] = db.execute('SELECT COUNT(*) FROM '+table).fetchone()[0]
+                if 'icdb_database_version' in tables:
+                    row = db.execute('SELECT base, revision FROM icdb_database_version WHERE id=1').fetchone()
+                    if row:
+                        self.diagnostic_metadata['version'] = str(row[0]) + (f'-r{row[1]}' if row[1] else '')
+            except Exception as exc:
+                self.diagnostic_metadata['metadata_error'] = str(exc)
         # Separate from normal affix/fuzzy indexes: only slash-bearing full
         # part numbers and verified aliases are eligible. A collision among
         # different devices must never be resolved automatically.

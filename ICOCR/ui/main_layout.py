@@ -208,24 +208,11 @@ class MainLayoutMixin:
         diag_tab = QWidget()
         dl = QVBoxLayout(diag_tab)
         dl.setContentsMargins(10, 10, 10, 10)
-        self.details_title = QToolButton()
-        self.details_title.setText('Identification details')
-        self.details_title.setCheckable(True)
-        self.details_title.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.details_title.setArrowType(Qt.ArrowType.RightArrow)
-        dl.addWidget(self.details_title)
-        self.details = QPlainTextEdit()
-        self.details.setReadOnly(True)
-        self.details.setPlaceholderText('Scan the selected image region to display database candidates.')
-        self.details.setMinimumHeight(100)
-        self.details.setVisible(False)
-        dl.addWidget(self.details, 1)
-        self.details_title.toggled.connect(self._toggle_identification_details)
-
         self.diagnostic_text = QPlainTextEdit()
         self.diagnostic_text.setReadOnly(True)
         dl.addWidget(self.diagnostic_text, 2)
-        self.tabs.addTab(diag_tab, 'Diagnostics')
+        self.diagnostic_tab_index = self.tabs.addTab(diag_tab, 'Diagnostics')
+        self.tabs.currentChanged.connect(self._diagnostic_tab_changed)
         self.tabs.currentChanged.connect(lambda _: QTimer.singleShot(0, self._fit_visible_pinouts))
 
         self.workspace.addWidget(self.tabs)
@@ -242,6 +229,3 @@ class MainLayoutMixin:
                              ('F11', self._toggle_fullscreen), ('Escape', self._leave_fullscreen)):
             QShortcut(QKeySequence(keys), self, activated=lambda action=action: action())
 
-    def _toggle_identification_details(self, visible):
-        self.details.setVisible(visible)
-        self.details_title.setArrowType(Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow)
