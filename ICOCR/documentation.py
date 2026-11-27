@@ -4,7 +4,10 @@
 slow or unreachable folder can no longer keep the process alive after the
 window has closed. Requests are written in submission order.
 """
+from itertools import count
 from pathlib import Path
+import re
+from zipfile import ZipFile, ZIP_DEFLATED
 import queue
 import threading
 import cv2
@@ -67,6 +70,39 @@ class Documentation:
         # Freeze the destination now; a settings change must not redirect queued saves.
         # Frames are never modified after capture, so no copy is needed here.
         return self._submit('capture', self._capture, frame, self.capture_directory)
+
+    def export_diagnostics(self, directory, marking, frame, annotated, report):
+        return self._submit('Diagnostics', self._write_diagnostics, directory, marking, frame, annotated, report)
+
+    @staticmethod
+    def _write_diagnostics(directory, marking, frame, annotated, report):
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        stem = re.sub(r'[^A-Za-z0-9_.-]+', '_', marking)[:80].strip(' .') or 'unidentified'
+        if re.fullmatch(r'CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9]', stem.split('.')[0], re.IGNORECASE):
+            stem = '_' + stem
+        images = []
+        for image in (frame, annotated):
+            ok, encoded = cv2.imencode('.png', image)
+            if not ok:
+                raise OSError('PNG encoding failed')
+            images.append(encoded.tobytes())
+        for number in count(1):
+            name = stem if number == 1 else f'{stem}_{number}'
+            path = directory / f'{name}.zip'
+            try:
+                stream = path.open('xb')
+            except FileExistsError:
+                continue
+            try:
+                with stream, ZipFile(stream, 'w') as archive:
+                    archive.writestr('camera.png', images[0])
+                    archive.writestr('camera_overlay.png', images[1])
+                    archive.writestr('diagnostics.txt', report.encode('utf-8'), compress_type=ZIP_DEFLATED)
+            except Exception:
+                path.unlink(missing_ok=True)
+                raise
+            return path
 
     @staticmethod
     def _jpeg(image, quality):

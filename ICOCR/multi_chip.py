@@ -367,7 +367,7 @@ def plan(engine, image, *, detections=None, offset=(0, 0), cancelled=None, max_c
 
 def read_chips(engine, image, *, read, auto_body=True, detections=None, offset=(0, 0),
                package_options=None, package_frame=None, cancelled=None, max_chips=MAX_CHIPS,
-               detector_only=False, **ocr_options):
+               detector_only=False, previous_rows=(), **ocr_options):
     """Read every chip in ``image``.
 
     ``read`` is ``body_scan.read_with_body`` (injected for tests). Results use
@@ -405,7 +405,12 @@ def read_chips(engine, image, *, read, auto_body=True, detections=None, offset=(
                     options.update(package_frame=package_frame,
                         package_roi=((ox+x0)/fw, (oy+y0)/fh, (ox+x1)/fw, (oy+y1)/fh))
             if detector_only:
-                options['allow_recovery'] = False
+                options['body_only'] = True
+            if previous_rows:
+                local_previous = deepcopy(previous_rows)
+                for previous in local_previous:
+                    _shift(previous, [-x0, -y0])
+                options['previous_rows'] = local_previous
             rows, elapsed = read(engine, work, enabled=auto_body or detection is not None,
                                  detection=detection, **options)
             # 0.8.4.3: one copy of both (shared rows stay shared, so the joint
@@ -421,6 +426,8 @@ def read_chips(engine, image, *, read, auto_body=True, detections=None, offset=(
         _shift(diagnostics, [x0, y0], shifted)
         decision = diagnostics.get('scan_result') or {}
         target, status = decision.get('selected'), 'selected'
+        if diagnostics.get('retained_live_reading') is not None:
+            target, status = diagnostics['retained_live_reading'], 'retained'
         if target is None and decision.get('provisional') is not None:
             target, status = decision['provisional'], 'provisional'
         if target is None:

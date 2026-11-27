@@ -9,6 +9,7 @@ from body_locator import locate_body, body_crop, overlap_fraction
 import re
 from scan_result import build_scan_result
 from ocr_core import candidate_id, warped_size
+from live_prefix import previous_full_reading
 
 # Four-digit markings are normally suppressed as resistor codes (4701, 1001).
 # On an IC body they can be the part marking itself (ST prints "2904" for an
@@ -60,6 +61,28 @@ def plausible_body(crop, detection):
                 reason=f'Body outline too small for the selection ({fraction:.1%} < {minimum:.0%})')
 
 
+def _inside_body(text_box, body_box):
+    return bool(text_box) and overlap_fraction(text_box, body_box) >= .80
+
+
+def _body_result(rows, diagnostics, body_box, catalog):
+    all_rows = diagnostics.get('all_candidates', rows)
+    inside = lambda row: _inside_body(row.get('box'), body_box)
+    diagnostics['outside_body_candidates'] = [row for row in all_rows if not inside(row)]
+    all_rows = [dict(row, body_evidence=True) for row in all_rows if inside(row)]
+    rows = [dict(row, body_evidence=True) for row in rows if inside(row)]
+    eligible = {candidate_id(row) for row in rows}
+    rows += [row for row in mark_body_numeric(all_rows, body_box)
+             if candidate_id(row) not in eligible]
+    decision = build_scan_result(rows, all_rows, catalog)
+    for row in decision['all_candidates']:
+        row['body_box'] = body_box
+    if decision.get('provisional') is not None:
+        decision['provisional']['body_box'] = body_box
+    diagnostics.update(scan_result=decision, all_candidates=all_rows, candidates=rows)
+    return decision['display_candidates']
+
+
 def _recovery_read(engine, crop, read_started, ocr_options):
     """Full-selection recovery read. A live scan gets only what is left of the
     live retry budget that the body-crop read started (0.8.8), not a fresh one."""
@@ -84,7 +107,7 @@ def _recovery_read(engine, crop, read_started, ocr_options):
             engine.live_retry_budget = previous
 
 
-def read_with_body(engine, crop, *, enabled=False, detection=None, package_options=None, package_image=None, package_frame=None, package_roi=None, allow_recovery=True, **ocr_options):
+def read_with_body(engine, crop, *, enabled=False, detection=None, package_options=None, package_image=None, package_frame=None, package_roi=None, allow_recovery=True, body_only=False, previous_rows=(), **ocr_options):
     """detection: optional precomputed body (e.g. from the trained detector);
     otherwise the geometric locator runs when enabled."""
     started = time.monotonic()
@@ -122,46 +145,44 @@ def read_with_body(engine, crop, *, enabled=False, detection=None, package_optio
                 for child in value:
                     restore(child)
         restore(rows);restore(diagnostics)
-        all_rows = diagnostics.get('all_candidates',rows)
-        inside = lambda r: bool(r.get('box')) and overlap_fraction(r['box'],detection['box'])>=.80
-        diagnostics['outside_body_candidates'] = [r for r in all_rows if not inside(r)]
-        all_rows = [r for r in all_rows if inside(r)]
-        rows = [r for r in rows if inside(r)]
-        for row in all_rows + rows:
-            row['body_evidence'] = True
-        eligible = {candidate_id(r) for r in rows}
-        rows += [r for r in mark_body_numeric(all_rows, detection['box'])
-                 if candidate_id(r) not in eligible]
-        decision = build_scan_result(rows,all_rows,ocr_options.get('catalog'))
-        for row in decision['all_candidates']:
-            row['body_box'] = detection['box']
-        if decision.get('provisional') is not None:
-            decision['provisional']['body_box'] = detection['box']
-        diagnostics['scan_result'] = decision
-        diagnostics['all_candidates'] = all_rows
-        diagnostics['candidates'] = rows
-        rows = decision['display_candidates']
+        rows = _body_result(rows, diagnostics, detection['box'], ocr_options.get('catalog'))
         detection['status'] = 'applied'
         detection['crop_offset'] = offset
         detection['crop_size'] = [work.shape[1],work.shape[0]]
+    initial = diagnostics.get('scan_result', {}).get('selected')
+    previous = previous_full_reading(initial, previous_rows) if previous_rows else None
     # One bounded recovery scan, using original pixels and selection coordinates.
     # Do not recurse: recovery must never reapply the same failing body mask.
     if (allow_recovery and getattr(engine, 'acquisition_only', False) is not True and detection['status'] == 'applied' and
-            not diagnostics.get('scan_result', {}).get('selected')):
-        event("body_recovery_started")
+            (initial is None or previous is not None)):
+        scoped = body_only or previous is not None
+        event("body_recovery_started", body_only=body_only,
+              reason='truncated live marking' if previous is not None else 'no selection')
         cropped_diagnostics = diagnostics
-        full_rows, _ = _recovery_read(engine, crop, read_started, ocr_options)
-        # 0.8.4.3: no deep copy. Nothing below changes these rows or any nested
-        # value (only top-level keys of this dict copy), and the engine replaces,
-        # never edits, last_diagnostics on its next read.
+        recovery_options = dict(ocr_options)
+        if scoped:
+            body_box = detection['box']
+            # Use the original pixels for retry and deskew. Only text on this
+            # body can influence either the retry decision or identification.
+            recovery_options['accept_box'] = lambda box: _inside_body(box, body_box)
+        if previous is not None:
+            recovery_options['retry_if_unverified'] = True
+        full_rows, _ = _recovery_read(engine, crop, read_started, recovery_options)
         full_diagnostics = dict(engine.last_diagnostics)
-        recovered = bool(full_diagnostics.get('scan_result', {}).get('selected'))
+        if scoped:
+            eligible = full_diagnostics.get('candidates', full_rows)
+            full_rows = _body_result(eligible, full_diagnostics, body_box, ocr_options.get('catalog'))
+        recovered_row = full_diagnostics.get('scan_result', {}).get('selected')
+        recovered = bool(recovered_row and (previous is None or recovered_row.get('selected_database_match')))
         if recovered:
             rows, diagnostics = full_rows, full_diagnostics
-            detection = dict(detection, status='fallback', box=None,
-                             attempted_box=detection['box'],
-                             reason='Body scan failed; recovered from full selection')
-        diagnostics['body_recovery'] = dict(attempted=True, recovered=recovered,
+            if scoped:
+                detection['reason'] = 'Recovered an on-body marking from the unmasked scan region'
+            else:
+                detection = dict(detection, status='fallback', box=None,
+                                 attempted_box=detection['box'],
+                                 reason='Body scan failed; recovered from full selection')
+        diagnostics['body_recovery'] = dict(attempted=True, recovered=recovered, body_only=body_only, body_filtered=scoped,
             cropped_scan_result=cropped_diagnostics.get('scan_result'),
             full_scan_result=full_diagnostics.get('scan_result'))
         timings = {}
@@ -180,12 +201,18 @@ def read_with_body(engine, crop, *, enabled=False, detection=None, package_optio
         diagnostics['body_recovery'] = dict(attempted=False, recovered=False,
                                              reason='Observation prototype: wait for new evidence')
     diagnostics['body_detection'] = detection
+    recovery = diagnostics.get('body_recovery', {})
+    actual = 'full selection'
+    if recovery.get('body_filtered') and recovery.get('recovered'):
+        actual = 'unmasked scan region (body-filtered)'
+    elif detection['status'] == 'applied':
+        actual = 'model body' if detection.get('source') == 'model' else 'geometric body'
     diagnostics['scan_input'] = dict(
         requested=('model body' if detection.get('requested_source', detection.get('source')) == 'model' else 'geometric body') if enabled else 'full selection',
-        actual=('model body' if detection.get('source') == 'model' else 'geometric body') if detection['status'] == 'applied' else 'full selection',
+        actual=actual,
         fallback=bool(detection.get('model_fallback_reason')) or detection['status'] not in ('applied','disabled'),
         reason='; '.join(x for x in (detection.get('model_fallback_reason'), detection.get('reason')) if x),
-        full_selection_retry=diagnostics.get('body_recovery', {}))
+        full_selection_retry=recovery)
     timings = diagnostics.setdefault('timings',{})
     from package_classifier import classify_scan
     package = classify_scan(crop if package_image is None else package_image,
@@ -217,6 +244,15 @@ def read_with_body(engine, crop, *, enabled=False, detection=None, package_optio
                     (row.get('selected_database_match') or {}).get('match_type') == 'corrected_alias'):
                 row['package_classification'] = package
         decision['package_classification'] = package
+    if previous is not None:
+        current = (decision or {}).get('selected')
+        holds = previous.get('live_prefix_holds', 0)
+        retained = not (current or {}).get('selected_database_match') and holds < 2
+        diagnostics['live_prefix'] = dict(observed=initial['key'], previous=previous['key'], retained=retained)
+        if retained:
+            # Position the held identity on the current frame's partial text.
+            diagnostics['retained_live_reading'] = dict(previous, box=initial['box'],
+                body_box=initial['body_box'], live_prefix_holds=holds + 1)
     timings['package_classification_ms'] = package['milliseconds']
     timings['body_detection_ms'] = detection['milliseconds']
     elapsed = time.monotonic()-started

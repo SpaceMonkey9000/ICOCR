@@ -169,12 +169,14 @@ class SettingsDialog(QDialog):
         forms = QFormLayout()
         self.data_path = QLineEdit(str(DATA))
         self.capture_path = QLineEdit(str(window.documenter.capture_directory))
+        self.diagnostics_path = QLineEdit(str(window.diagnostics_directory))
         self.models_path = QLineEdit(str(window.models_directory))
         self.package_path = QLineEdit(str(window.effective_package_model()))
         self.body_model_path = QLineEdit(str(window.body_model or ''))
         for title, field, mode in (
             ('Shared DATA folder', self.data_path, 'directory'),
             ('Saved photos', self.capture_path, 'directory'),
+            ('Diagnostics exports', self.diagnostics_path, 'directory'),
             ('Models folder', self.models_path, 'directory'),
             ('Package model', self.package_path, 'model'),
             ('Body segmentation model', self.body_model_path, 'model'),

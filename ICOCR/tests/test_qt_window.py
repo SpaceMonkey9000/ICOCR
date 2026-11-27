@@ -119,6 +119,46 @@ class WindowTests(unittest.TestCase):
         return (window.recognition_overlay.root.transform().dx()
                 - (truth[id(window.current_image)] - truth[id(window._shown['frame'])]))
 
+    def test_diagnostics_zip_matches_the_scanned_frame(self):
+        from pathlib import Path
+        from zipfile import ZipFile
+
+        window = self.window
+        original_directory = window.diagnostics_directory
+        original_tab = window.tabs.currentIndex()
+        window.start_camera()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                window.diagnostics_directory = Path(directory)
+                window._set_diagnostics_enabled(True)
+                window.tabs.setCurrentIndex(window.diagnostic_tab_index)
+                self.assertTrue(self.pump(until=lambda: window.current_image is not None))
+                window.scan()
+                self.assertTrue(self.pump(until=window.diagnostic_export_btn.isEnabled))
+                frame = window._shown['frame']
+                report = window.diagnostic_text.toPlainText()
+                window.diagnostic_export_btn.click()
+                window.diagnostic_export_btn.click()
+                path = Path(directory) / 'SN74HC00.zip'
+                collision = Path(directory) / 'SN74HC00_2.zip'
+                self.assertTrue(self.pump(until=lambda: collision.is_file()
+                                          and window.statusBar().currentMessage().endswith(collision.name)))
+                for saved in (path, collision):
+                    with ZipFile(saved) as archive:
+                        self.assertEqual(set(archive.namelist()), {'camera.png', 'camera_overlay.png', 'diagnostics.txt'})
+                        self.assertEqual(archive.read('diagnostics.txt').decode(), report)
+                        images = [cv2.imdecode(np.frombuffer(archive.read(name), np.uint8), cv2.IMREAD_COLOR)
+                                  for name in ('camera.png', 'camera_overlay.png')]
+                        np.testing.assert_array_equal(images[0], frame)
+                        self.assertEqual(images[1].shape, frame.shape)
+                        np.testing.assert_array_equal(images[1][0, 0], frame[0, 0])
+                        self.assertGreater(np.count_nonzero(images[0] != images[1]), 100)
+        finally:
+            window._set_diagnostics_enabled(False)
+            window.diagnostics_directory = original_directory
+            window.tabs.setCurrentIndex(original_tab)
+            window.stop_camera()
+
     def test_preview_scan_overlay_freeze_and_live(self):
         window, overlay = self.window, self.window.recognition_overlay
         window.start_camera()

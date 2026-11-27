@@ -99,6 +99,7 @@ class MainWindow(MainLayoutMixin, CameraMixin, ScanMixin, PinoutPanelMixin, Hist
         self._ocr_sleeping = False
 
         self.documenter = Documentation(DATA, capture_directory=configured_capture_directory(self.preferences.load()))
+        self.diagnostics_directory = self.documenter.capture_directory / 'Diagnostics'
         self._build()
         self.recognition_overlay = RecognitionOverlay(self.view)
         self.view.view_changed.connect(self.recognition_overlay.place_labels)
@@ -148,12 +149,14 @@ class MainWindow(MainLayoutMixin, CameraMixin, ScanMixin, PinoutPanelMixin, Hist
         # Validate before applying any settings; do not silently create a new, empty ICDB.
         candidate_data = Path(settings.data_path.text().strip()).expanduser()
         candidate_photos = Path(settings.capture_path.text().strip()).expanduser()
+        candidate_diagnostics = Path(settings.diagnostics_path.text().strip()).expanduser()
         candidate_models = Path(settings.models_path.text().strip()).expanduser()
         candidate_package = Path(settings.package_path.text().strip()).expanduser()
         candidate_body = Path(settings.body_model_path.text().strip()).expanduser()
         if not all((candidate_data.is_absolute(), candidate_photos.is_absolute(),
-                    candidate_models.is_absolute(), candidate_package.is_absolute(), candidate_body.is_absolute())):
-            QMessageBox.warning(self, 'Invalid paths', 'All five paths must be absolute.')
+                    candidate_diagnostics.is_absolute(), candidate_models.is_absolute(),
+                    candidate_package.is_absolute(), candidate_body.is_absolute())):
+            QMessageBox.warning(self, 'Invalid paths', 'All paths must be absolute.')
             return
         candidate_data = candidate_data.resolve()
         if candidate_data != DATA and not database_file(candidate_data).is_file():
@@ -185,6 +188,7 @@ class MainWindow(MainLayoutMixin, CameraMixin, ScanMixin, PinoutPanelMixin, Hist
                 QMessageBox.warning(self, 'Cannot save DATA location', str(exc))
                 return
         self.documenter.capture_directory = candidate_photos.resolve()
+        self.diagnostics_directory = candidate_diagnostics.resolve()
         self.models_directory = candidate_models.resolve()
         self.body_model = str(candidate_body.resolve())
         if candidate_data != DATA:
@@ -226,6 +230,9 @@ class MainWindow(MainLayoutMixin, CameraMixin, ScanMixin, PinoutPanelMixin, Hist
 
     def _restore_preferences(self, settings):
         self.icdb_installation = str(settings.get('icdb_installation') or '')
+        diagnostics_folder = settings.get('diagnostics_folder')
+        if isinstance(diagnostics_folder, str) and diagnostics_folder.strip():
+            self.diagnostics_directory = Path(diagnostics_folder).expanduser().resolve()
         self.theme = normalized_theme(settings.get('theme', 'dark'))
         self.invert_svg_pinouts = bool(settings.get('invert_svg_pinouts', True))
         self.body_only_enabled = bool(settings.get('body_only_enabled', False))
@@ -278,6 +285,7 @@ class MainWindow(MainLayoutMixin, CameraMixin, ScanMixin, PinoutPanelMixin, Hist
                       sleep_seconds=self.sleep_seconds,
                       models_directory=str(self.models_directory),
                       capture_folder=str(self.documenter.capture_directory),
+                      diagnostics_folder=str(self.diagnostics_directory),
                       window_size=[self.width(), self.height()],
                       workspace_sizes=self.workspace.sizes())
         if getattr(self, 'icdb_installation', None):

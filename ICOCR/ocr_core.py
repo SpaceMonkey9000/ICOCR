@@ -370,11 +370,14 @@ class OCR:
         self.strict = strict
         self.last_diagnostics = {}
 
-    def read(self, crop, preferred='Original', known=(), live=False, catalog=None):
+    def read(self, crop, preferred='Original', known=(), live=False, catalog=None, *,
+             accept_box=None, retry_if_unverified=False):
+        """Read a region, optionally rejecting text boxes in the input region's coordinates."""
         config = configuration(getattr(self, 'preprocessing', None))
         if config is None:
-            return self._read_standard(crop, preferred, known, live, catalog)
-        return self._read_configured(crop, config, known, live, catalog)
+            return self._read_standard(crop, preferred, known, live, catalog, accept_box=accept_box,
+                                       retry_if_unverified=retry_if_unverified)
+        return self._read_configured(crop, config, known, live, catalog, accept_box=accept_box)
 
     def _prepare(self, crop, treatment):
         config = getattr(self, '_active_preprocessing', None)
@@ -426,7 +429,7 @@ class OCR:
             self.runtime['reason'] = str(exc)
             return perform()
 
-    def _read_configured(self, crop, config, known, live, catalog):
+    def _read_configured(self, crop, config, known, live, catalog, *, accept_box=None):
         from scan_result import build_scan_result
         from snapshot_selection import replacement_reason, stop_reason, stage, VERSION as SELECTION_VERSION
         started = time.monotonic()
@@ -451,7 +454,7 @@ class OCR:
                 pass_started = time.perf_counter()
                 with recognition_preprocessing(self.engine, preset, config['settings'], config['stage'] == 'crop'):
                     rows, _ = self._read(crop, known=known, treatment=preset,
-                                         allow_deskew=config['stage'] == 'snapshot')
+                                         allow_deskew=config['stage'] == 'snapshot', accept_box=accept_box)
                 self.check_cancelled()
                 self._verify_cuda('OCR session switched to CPU during the preprocessing experiment')
                 diagnostics = self.last_diagnostics
@@ -505,7 +508,8 @@ class OCR:
             self._crop_detection_cache = None
             self._extra_pass = False
 
-    def _read_standard(self, crop, preferred='Original', known=(), live=False, catalog=None):
+    def _read_standard(self, crop, preferred='Original', known=(), live=False, catalog=None, *,
+                       accept_box=None, retry_if_unverified=False):
         started = time.monotonic()
         self._live_deadline = started + getattr(self, 'live_retry_budget', tuning('ocr_core.live_retry_budget_seconds')) if live else None
         self._extra_pass = False
@@ -553,7 +557,7 @@ class OCR:
         # 'Live' is a request label, not an image treatment. Standard scanning
         # starts with Original; explicit Local contrast preferences still work.
         primary = 'Original' if preferred in ('Original', 'Live') else 'Local contrast'
-        fast_options = {'treatment': primary}
+        fast_options = {'treatment': primary, 'accept_box': accept_box}
         if live and not getattr(self, 'verification', False):
             fast_options['early_accept'] = early_accept
         if live and getattr(self, 'targeted_original', False):
@@ -563,6 +567,8 @@ class OCR:
             self._extra_pass = False
             result = self._read(crop,preferred,known,orientations=orientations,**fast_options)
             selected = choices(result)
+            if retry_if_unverified:
+                selected = [row for row in selected if row.get('selected_database_match')]
             # Strong unknown/custom text is a successful read, too. One extra
             # treatment is the retry budget; targeted Original covers all axes.
             strong = any(r.get('score', 0) >= (tuning('ocr_core.exact_retry_stop_score') if any(
@@ -610,7 +616,7 @@ class OCR:
                     retry_turns = list(range(4))
                 self._extra_pass = True
                 self._read(crop, preferred, known, orientations=retry_turns,
-                           treatment=treatment, allow_deskew=False)
+                           treatment=treatment, allow_deskew=False, accept_box=accept_box)
                 retry = self.last_diagnostics
                 observations = base['observations'] + retry['observations']
                 rows, angle, every = split_candidates(observations, known, modes=1)
@@ -638,7 +644,9 @@ class OCR:
                     os.environ.get('ICOCR_STRAIGHTEN_FALLBACK', '1') == '0'):
                 return result
             choices(result)
-            if selection_cache['result']['selected'] or self.extra_budget_expired():
+            selected = selection_cache['result']['selected']
+            identified = selected and (not retry_if_unverified or selected.get('selected_database_match'))
+            if identified or self.extra_budget_expired():
                 return result
             base = self.last_diagnostics
             skew = dominant_skew(base.get('raw', []))
@@ -647,8 +655,12 @@ class OCR:
             straight, matrix = straighten(crop, skew, return_matrix=True)
             inverse = cv2.invertAffineTransform(matrix)
             self._extra_pass = True
+            straight_box_filter = None
+            if accept_box is not None:
+                straight_box_filter = lambda box: accept_box(unstraighten_box(box, inverse))
             self._read(straight, preferred, known, orientations=orientations,
-                       treatment=fast_options.get('treatment', 'Local contrast'), allow_deskew=False)
+                       treatment=fast_options['treatment'], allow_deskew=False,
+                       accept_box=straight_box_filter)
             tilted = self.last_diagnostics
             for row in tilted['raw'] + tilted['observations']:
                 if row.get('box'):
@@ -696,13 +708,13 @@ class OCR:
         return deadline is not None and time.monotonic() >= deadline
 
     def _read(self, crop, preferred='Original', known=(), orientations=range(4),
-              treatment='Local contrast', allow_deskew=True, early_accept=None):
+              treatment='Local contrast', allow_deskew=True, early_accept=None, accept_box=None):
         if getattr(self, 'fast', False):
             return self._read_fast(crop, known, orientations=orientations,
-                                   treatment=treatment, early_accept=early_accept)
+                                   treatment=treatment, early_accept=early_accept, accept_box=accept_box)
         return self._read_full(crop, preferred, known, orientations=orientations,
                                treatment=treatment, allow_deskew=allow_deskew,
-                               early_accept=early_accept)
+                               early_accept=early_accept, accept_box=accept_box)
 
     def _detect_turn(self, image, k, cache=None):
         """Text detection on one quarter turn (no classifier, no recognition).
@@ -799,7 +811,7 @@ class OCR:
         return readings, skipped
 
     def _read_fast(self, crop, known=(), orientations=range(4), treatment='Local contrast',
-                   early_accept=None):
+                   early_accept=None, accept_box=None):
         """Detect lines at 0 and 90 degrees only; recognise every line both ways.
 
         Text detection is the expensive stage and covers 180/270 degrees through
@@ -864,6 +876,9 @@ class OCR:
                     text, score, rotation = reading['text'], reading['score'], reading['rotation']
                     alternative, i = reading['alternative'], reading['crop_id']
                     mapped = restore_box(reading['box'], k, probe.shape, crop.shape)
+                    if accept_box is not None and not accept_box(mapped):
+                        event("outside_body_rejected", text=text, box=mapped, coordinate_space="OCR pass input")
+                        continue
                     row = dict(text=text, score=score, rotation=rotation,
                                mode=treatment, orientation_alternative=alternative,
                                box=mapped, detection_turn=k*90, pass_id=pass_id,
@@ -934,14 +949,14 @@ class OCR:
                     milliseconds=(time.perf_counter()-started)*1000)
 
     def _read_full(self, crop, preferred='Original', known=(), orientations=range(4),
-              treatment='Local contrast', allow_deskew=True, early_accept=None):
+              treatment='Local contrast', allow_deskew=True, early_accept=None, accept_box=None):
         # 0.8.4.3: shared 0/90-degree detection (tuning ocr_core.full_shared_detection).
         # Engines without RapidOCR's stage methods (test doubles) keep the legacy path.
         if (_setting('ocr_core.full_shared_detection', 0) and
                 callable(getattr(type(self.engine), 'auto_text_det', None))):
             return self._read_full_shared(crop, known, orientations=orientations,
                                           treatment=treatment, allow_deskew=allow_deskew,
-                                          early_accept=early_accept)
+                                          early_accept=early_accept, accept_box=accept_box)
         start = time.monotonic()
         h,w = crop.shape[:2]
         if min(h,w) < 12:
@@ -974,6 +989,12 @@ class OCR:
             self._pass_serial = getattr(self, '_pass_serial', 0) + 1
             for crop_id, (box, text, score) in enumerate(probe_rows or []):
                 mapped = restore_box(box, turns, probe.shape, crop.shape)
+                if accept_box is not None and not accept_box(mapped):
+                    event("outside_body_rejected", text=text, box=mapped, coordinate_space="OCR pass input")
+                    continue
+                if len(text) >= 4 and float(score) >= tuning('ocr_core.recheck_min_score'):
+                    dx, dy = box[1][0]-box[0][0], box[1][1]-box[0][1]
+                    angles.append((math.degrees(math.atan2(dy, dx))+45) % 90-45)
                 provenance = dict(pass_id=self._pass_serial, crop_id=crop_id,
                                   detection_turn=turns*90, deskew_degrees=0.)
                 raw.append(dict(text=text, score=float(score), rotation=turns*90,
@@ -993,12 +1014,6 @@ class OCR:
                         candidates=fast_rows,ocr_calls=ocr_calls,early_exit=True,
                         note='Live scan stopped after a confident reading; unused rotations skipped.')
                     return fast_rows,time.monotonic()-start
-            for box,text,score in probe_rows or []:
-                if len(text) < 4 or float(score) < tuning('ocr_core.recheck_min_score'):
-                    continue
-                dx,dy = box[1][0]-box[0][0],box[1][1]-box[0][1]
-                angle = (math.degrees(math.atan2(dy,dx))+45)%90-45
-                angles.append(angle)
         skew = float(np.median(angles)) if angles else 0.0
         initial_observations = list(observations)
         inverse = None
@@ -1037,6 +1052,9 @@ class OCR:
                     self._pass_serial = getattr(self, '_pass_serial', 0) + 1
                 for crop_id, (box,text,score) in enumerate(rows or []):
                     mapped_box = restore_box(box, turns, (im if skew else probe).shape, crop.shape, inverse)
+                    if accept_box is not None and not accept_box(mapped_box):
+                        event("outside_body_rejected", text=text, box=mapped_box, coordinate_space="OCR pass input")
+                        continue
                     raw.append(dict(text=text,score=float(score),rotation=turns*90,mode=mode,
                                     box=mapped_box, detection_turn=turns*90,
                                     pass_id=self._pass_serial, crop_id=crop_id, deskew_degrees=skew))
@@ -1052,7 +1070,7 @@ class OCR:
         return candidates,time.monotonic()-start
 
     def _read_full_shared(self, crop, known=(), orientations=range(4), treatment='Local contrast',
-                          allow_deskew=True, early_accept=None):
+                          allow_deskew=True, early_accept=None, accept_box=None):
         """Full scan with the fast scan's detection sharing (0.8.4.3).
 
         RapidOCR's own pipeline runs its angle classifier, which turns crops it
@@ -1102,6 +1120,14 @@ class OCR:
             for reading in readings:
                 text, score, rotation = reading['text'], reading['score'], reading['rotation']
                 mapped = restore_box(reading['box'], k, image.shape, source_shape, inverse)
+                if accept_box is not None and not accept_box(mapped):
+                    event("outside_body_rejected", text=text, box=mapped, coordinate_space="OCR pass input")
+                    continue
+                if (not skew and not reading['alternative'] and len(text) >= 4 and
+                        score >= tuning('ocr_core.recheck_min_score')):
+                    box = reading['det_box']
+                    dx, dy = box[1][0]-box[0][0], box[1][1]-box[0][1]
+                    angles.append((math.degrees(math.atan2(dy, dx))+45) % 90-45)
                 provenance = dict(pass_id=self._pass_serial, crop_id=reading['crop_id'],
                                   detection_turn=k*90, deskew_degrees=skew,
                                   orientation_alternative=reading['alternative'])
@@ -1112,14 +1138,13 @@ class OCR:
                 raw.append(row)
                 observations.extend(dict(t, **provenance) for t in
                                     line_tokens(text, score, rotation, treatment, mapped))
-            return readings
 
         for k in turns_order:
             self.check_cancelled()
             if ocr_calls and getattr(self, '_extra_pass', False) and self.extra_budget_expired():
                 self._budget_limited = True
                 break
-            readings = scan(probe, k, crop.shape, None, 0.)
+            scan(probe, k, crop.shape, None, 0.)
             if early_accept is not None:
                 fast_rows, fast_angle, fast_all = split_candidates(list(observations), known, modes=1)
                 if early_accept(fast_rows):
@@ -1129,13 +1154,6 @@ class OCR:
                         early_exit=True, shared_detection=True,
                         note='Live scan stopped after a confident reading; unused rotations skipped.')
                     return fast_rows, time.monotonic()-start
-            for reading in readings:
-                if (reading['alternative'] or len(reading['text']) < 4 or
-                        reading['score'] < tuning('ocr_core.recheck_min_score')):
-                    continue
-                box = reading['det_box']
-                dx, dy = box[1][0]-box[0][0], box[1][1]-box[0][1]
-                angles.append((math.degrees(math.atan2(dy, dx))+45) % 90-45)
         skew = float(np.median(angles)) if angles else 0.0
         initial_observations = list(observations)
         if allow_deskew and 8 < abs(skew) < 43 and self.extra_budget_expired():

@@ -91,13 +91,14 @@ class EngineLoader(QThread):
 class FullScanWorker(QThread):
     scanned = Signal(int, object, object, float, str)
 
-    def __init__(self, epoch, frame, roi, catalog, settings, parent=None):
+    def __init__(self, epoch, frame, roi, catalog, settings, parent=None, *, previous_rows=()):
         super().__init__(parent)
         self.epoch = epoch
         self.frame = frame          # camera frames are never modified after capture
         self.roi = tuple(roi)
         self.catalog = catalog
         self.options = dict(settings)
+        self.previous_rows = previous_rows
         self.cancel_event = threading.Event()
 
     def cancel(self):
@@ -118,6 +119,7 @@ class FullScanWorker(QThread):
                     else:
                         self._scan()
         finally:
+            self.previous_rows = ()
             self.frame = self.catalog = None   # do not keep the frame alive with the thread object
 
     def _scan(self):
@@ -153,6 +155,7 @@ class FullScanWorker(QThread):
                     preferred='Original', known=(), live=False,
                     package_options=package_options, package_frame=self.frame,
                     detections=model_detections, detector_only=bool(self.options.get('body_only')),
+                    previous_rows=self.previous_rows,
                     offset=(int(self.roi[0]*self.frame.shape[1]),int(self.roi[1]*self.frame.shape[0])))
                 if self.cancel_event.is_set():
                     return
@@ -185,7 +188,7 @@ class FullScanWorker(QThread):
                     rows, elapsed = read_with_body(
                         ocr, crop, enabled=self.options['body'] or self.options.get('body_only'),
                         detection=chosen_body,
-                        allow_recovery=not self.options.get('body_only'),
+                        body_only=bool(self.options.get('body_only')), previous_rows=self.previous_rows,
                         preferred='Original', known=(), catalog=self.catalog, live=False,
                         package_options=package_options,
                         package_frame=self.frame, package_roi=self.roi)
@@ -195,6 +198,9 @@ class FullScanWorker(QThread):
                 diagnostics['model_body_outlines'] = [d['polygon'] for d in model_detections]
                 decision = diagnostics.get('scan_result') or build_scan_result(
                     rows, diagnostics.get('all_candidates', rows), self.catalog)
+                retained = diagnostics.get('retained_live_reading')
+                if retained is not None:
+                    decision = dict(decision, selected=retained)
             if not self.cancel_event.is_set():
                 event("scan_finished", selected=(decision.get("selected") or {}).get("key"))
                 if self.options.get("diagnostics", False):

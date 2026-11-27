@@ -35,7 +35,7 @@ class ScanModeSourceTests(unittest.TestCase):
                         [root / 'qt_window.py', *sorted((root / 'ui').rglob('*.py'))])
         self.assertIn("if self.options.get('multi'):", src)
         self.assertNotIn("if self.options.get('multi') or self.options.get('body_only'):", src)
-        self.assertIn('allow_recovery=not self.options.get(\'body_only\')', src)
+        self.assertIn("body_only=bool(self.options.get('body_only'))", src)
         self.assertIn('multi=self.multi_enabled,', src)
         self.assertIn('self.scan_mode.addItem(\'Single chip\', False)', src)
         self.assertIn('self.scan_mode.addItem(\'Multiple chips\', True)', src)

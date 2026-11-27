@@ -64,7 +64,7 @@ def pipeline(decision, d):
             'model_body_outlines','package_classification','runtime','timings','treatments',
             'selected_rotation','deskew_degrees','ocr_calls','retry_calls','retry_reason',
             'retry_deferred','targeted_original','early_exit','live_budget_limited',
-            'reverse_reads_skipped','straightened_fallback','note')
+            'reverse_reads_skipped','straightened_fallback','live_prefix','note')
     out = {k:d[k] for k in keys if k in d}
     out['raw_ocr_readings'] = d.get('raw_observations', d.get('raw', []))
     out['normalised_observations'] = d.get('observations', [])

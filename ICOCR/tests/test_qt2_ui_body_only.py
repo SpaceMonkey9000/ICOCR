@@ -50,7 +50,7 @@ class BodyOnlyTests(unittest.TestCase):
         self.assertEqual(plan['chips'][0]['source'], 'detector')
         self.assertEqual(plan['discovery_passes'], 0)
 
-    def test_read_chips_disables_full_image_recovery(self):
+    def test_read_chips_requests_body_filtered_recovery(self):
         class Stub:
             last_diagnostics = {}
         engine = Stub()
@@ -62,7 +62,7 @@ class BodyOnlyTests(unittest.TestCase):
         with patch.object(multi_chip, 'discover_lines', side_effect=AssertionError('OCR discovery called')):
             chips, summary = multi_chip.read_chips(engine, self.image, read=fake_read, detections=self.detections, detector_only=True)
         self.assertEqual(len(calls), 1)
-        self.assertIs(calls[0]['allow_recovery'], False)
+        self.assertIs(calls[0]['body_only'], True)
         self.assertEqual(summary['discovery_passes'], 0)
 
 if __name__ == '__main__':

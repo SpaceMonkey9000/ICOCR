@@ -28,6 +28,11 @@ class ScanMixin:
         self._frozen_matrix = None
         self._reset_idle_sleep()
         self.recognition_overlay.clear()
+        self.diagnostic_export_btn.setEnabled(False)
+        self._diagnostic_dirty = True
+        self._diagnostic_error = None
+        self._discard_diagnostic_trace()
+        self._queue_diagnostic_render()
         if self.preview is not None:
             self.preview.keep(())
 
@@ -91,10 +96,35 @@ class ScanMixin:
                         package_model=str(self.effective_package_model()), body_model=self.body_model,
                         multi=self.multi_enabled,
                         body_only=self.body_only_enabled, diagnostics=self.diagnostics_enabled)
-        self.ocr_worker = FullScanWorker(self._epoch, image, roi, self.catalog, settings, self)
+        previous_rows = self._previous_live_rows(image, roi) if live else ()
+        self.ocr_worker = FullScanWorker(self._epoch, image, roi, self.catalog, settings, self,
+                                         previous_rows=previous_rows)
         self.ocr_worker.scanned.connect(self.scan_done)
         self.ocr_worker.finished.connect(self._scan_worker_finished)
         self.ocr_worker.start()
+
+    def _previous_live_rows(self, image, roi):
+        shown = self._shown
+        if shown is None or shown['roi'] != roi or shown['frame'].shape != image.shape:
+            return ()
+        rows = shown['verified_rows']
+        if not rows or shown['frame'] is image:
+            return rows
+        matrix = self._live_matrices.get(shown['epoch'])
+        if matrix is None:
+            return ()
+        h, w = image.shape[:2]
+        origin = np.array([int(roi[0]*w), int(roi[1]*h)])
+        aligned = []
+        for row in rows:
+            if not row.get('body_box'):
+                continue
+            geometry = {}
+            for key in ('box', 'body_box'):
+                points = np.asarray(row[key], dtype=float) + origin
+                geometry[key] = (points @ matrix[:, :2].T + matrix[:, 2] - origin).tolist()
+            aligned.append(dict(row, **geometry))
+        return aligned
 
     def _body_selected(self, roi):
         """Clicking a detected IC body replaces the current OCR selection.
@@ -189,7 +219,8 @@ class ScanMixin:
         self.recognition_overlay.set_results(rows, bodies, pending['roi'],
                                              (frame.shape[1], frame.shape[0]),
                                              database_loaded=self.catalog is not None)
-        self._shown = dict(epoch=epoch, frame=frame)
+        self._shown = dict(epoch=epoch, frame=frame, roi=pending['roi'], rows=rows, bodies=bodies,
+                           verified_rows=tuple(row for row in rows if row.get('selected_database_match')))
         if self.preview is not None:
             self.preview.keep([epoch])
         self._draw_overlay()
@@ -249,6 +280,7 @@ class ScanMixin:
         self._diagnostic_error = None
         self._discard_diagnostic_trace()
         self._diagnostic_dirty = True
+        self.diagnostic_export_btn.setEnabled(False)
         self.diagnostic_text.setPlainText(
             'Scan diagnostics disabled. Enable in Settings > Recognition.' if not enabled
             else 'Diagnostics enabled. Run a new scan to collect a report.')
@@ -275,6 +307,8 @@ class ScanMixin:
                 or self.tabs.currentIndex() != self.diagnostic_tab_index or self._closing):
             return
         self._diagnostic_dirty = False
+        self.diagnostic_export_btn.setEnabled(
+            self._shown is not None and self._diagnostic_error is None and 'execution_trace' in self.diagnostics)
         if self._diagnostic_error is not None:
             report = self._diagnostic_error
         elif 'execution_trace' in self.diagnostics:
@@ -285,6 +319,27 @@ class ScanMixin:
             self.diagnostic_text.setPlainText('Diagnostics enabled. Run a new scan to collect a report.')
             return
         self.diagnostic_text.setPlainText(json.dumps(report, indent=2, default=str))
+
+    def _export_diagnostics(self):
+        from ui.diagnostic_images import annotated_frame
+        if (not self.diagnostics_enabled or self._shown is None or self._diagnostic_error is not None
+                or 'execution_trace' not in self.diagnostics):
+            self.statusBar().showMessage('Run a scan with diagnostics enabled')
+            return
+        self._render_diagnostic_report()
+        scan = self._shown
+        decision = self.decision or {}
+        row = decision.get('selected') or decision.get('provisional') or {}
+        marking = self._selected_key() or row.get('key') or 'unidentified'
+        try:
+            annotated = annotated_frame(scan, self.catalog is not None)
+            if self.documenter.export_diagnostics(self.diagnostics_directory, marking, scan['frame'],
+                                                   annotated, self.diagnostic_text.toPlainText()):
+                self.statusBar().showMessage('Saving diagnostics ZIP…')
+            else:
+                self.statusBar().showMessage('Save queue full')
+        except (OSError, RuntimeError) as exc:
+            self.statusBar().showMessage(f'Diagnostics export failed: {exc}')
 
     # -- readings --------------------------------------------------------------
     def _selected_key(self):
